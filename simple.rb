@@ -5,6 +5,7 @@ require 'digest'
 require 'base64'
 require 'stringio'
 
+$SELECT_TIMEOUT = 1
 $WEB_SOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 $OPCODE_CONTINUATION = 0x00
 $OPCODE_TEXT = 0x01
@@ -28,6 +29,10 @@ def force_encoding(str, encoding)
   end
 end
 
+def binary(buf)
+  buf.encoding == Encoding::BINARY ? buf : buf.dup.force_encoding(Encoding::BINARY)
+end
+
 def write_byte(buffer, byte)
   buffer.write([byte].pack("C"))
 end
@@ -42,34 +47,10 @@ def apply_mask(payload, mask_key)
 end
 
 def send_frame(io, opcode, payload)
-=begin
-  frame = ''
-
-  byte1 = opcode | 0b10000000 # fin bit set, rsv1-3 are 0
-  frame << byte1
-
-  length = payload.size
-  if length <= 125
-    byte2 = length # since rsv4 is 0
-    frame << byte2
-  elsif length < 65536 # write 2 byte length
-    frame << 126
-    frame << [length].pack('n')
-  else # write 8 byte length
-    frame << 127
-    frame << [length >> 32, length & 0xFFFFFFFF].pack("NN")
-  end
-
-  frame << payload
-
-  puts frame.inspect
-
-  io.write(frame)
-  io.flush
-=end
-
-  payload = force_encoding(payload.dup(), "ASCII-8BIT")
-  buffer = StringIO.new(force_encoding("", "ASCII-8BIT"))
+  #TODO: figure out if force_encoding(payload) is required ???
+  #payload = force_encoding(payload.dup(), "ASCII-8BIT")
+  #buffer = StringIO.new(force_encoding("", "ASCII-8BIT"))
+  buffer = StringIO.new
   byte1 = opcode | 0b10000000
   write_byte(io, byte1)
   masked_byte = 0x00
@@ -83,31 +64,168 @@ def send_frame(io, opcode, payload)
     buffer.write([payload.bytesize / (2 ** 32), payload.bytesize % (2 ** 32)].pack("NN"))
   end
 
-  buffer.write(binary(payload))
-  #puts packed = Array(payload.bytes).pack("C*").inspect
-puts binary(payload).inspect
-  puts buffer.string.inspect
-  #io.write(buffer.string)
+  buffer.write(payload) #TODO: figure out if binary(payload) ???
   io.write(buffer.string)
-
-  #write_binary(io, payload)
 end
 
-# File lib/sunshowers/io.rb, line 87
-def write_binary(io, buf)
-  buf = binary(buf)
-  n = buf.size
-  length = []
-  begin
-    length.unshift((n % 128) | 0x80)
-  end while (n /= 128) > 0
-  length[-1] ^= 0x80
+def handle_client(sock)
+  crlf = "\r\n"
+  bytes_at_a_time = 3
+  websocket_framing = false
+  read_magic = false
+  input_buffer = String.new
+  request_headers = Hash.new
+  read_json_stream_start = false
+  loop do # reading HTTP WebSocket headers, or magic
+    ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT)
+    ready_for_reading.each do |socket_to_read_from|
+      partial_input = sock.read_nonblock(bytes_at_a_time)
+      if partial_input.length == 1
+        if partial_input == "{"
+          read_magic = true
+        end
+      end
+      input_buffer << partial_input
+    end if ready_for_reading
+    break if read_magic #NOTE: break reading because we got the magic byte as first token (non-websocket client)
+    pos_of_end_line = input_buffer.index(crlf)
+    unless pos_of_end_line.nil?
+      line = input_buffer.slice!(0, pos_of_end_line + crlf.length).strip
+      break if line.length == 0 #NOTE: break reading because we are at blank line at head of HTTP headers
+      parts = line.split(":")
+      if parts.length == 2
+        request_headers[parts[0]] = parts[1].strip
+      else
+        #NOTE: not a header, likely the "GET / ..." line, discarded
+      end
+    end
+  end
+  if key = request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
+    s = String.new
+    s << "HTTP/1.1 101 Switching Protocols" + crlf 
+    s << "Upgrade: websocket" + crlf 
+    s << "Connection: Upgrade" + crlf 
+    s << "Sec-WebSocket-Accept: " + create_web_socket_accept(key) + crlf
+    s << "Sec-WebSocket-Protocol: binary" + crlf
+    s << crlf 
+    loop do
+      ready_for_reading, ready_for_writing, errored = IO.select(nil, [sock])
+      ready_for_writing.each do |socket_to_write_to|
+        bytes_to_write = s.slice!(0, bytes_at_a_time)
+        bytes_written = socket_to_write_to.write(bytes_to_write)
+      end
+      break if s.length == 0 #NOTE: stop writing once we have delivered the entire header response
+    end
+    websocket_framing = true
+  else
+    raise "not sure what this is, abort and close" unless read_magic
+  end
 
-  io.write("\x80#{length.pack("C*")}#{buf}")
-end
+  websocket_framing_state = :read_frame_type
+  fin = nil
+  opcode = nil
+  plength = nil
+  mask = nil
+  mask_key = nil
+  payload = nil
 
-def binary(buf)
-  buf.encoding == Encoding::BINARY ? buf : buf.dup.force_encoding(Encoding::BINARY)
+  loop do #NOTE: begin main read/write tick loop
+    ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT) #NOTE: do not wait for write in same thread as read?
+    ready_for_reading.each do |socket_to_read_from|
+      partial_input = sock.read_nonblock(bytes_at_a_time)
+      input_buffer << partial_input
+    end if ready_for_reading
+    if websocket_framing
+      if websocket_framing_state == :read_frame_type && input_buffer.length >= 1
+        byte = input_buffer.slice!(0, 1).unpack("C")[0]
+        fin = (byte & 0x80) != 0
+        opcode = byte & 0x0f
+        websocket_framing_state = :read_frame_length
+      elsif websocket_framing_state == :read_frame_length && input_buffer.length >= 1
+        byte = input_buffer.slice!(0, 1).unpack("C")[0]
+        mask = (byte & 0x80) != 0
+        plength = byte & 0x7f
+        if plength == 126
+          websocket_framing_state = :read_frame_length_126
+        elsif plength == 127
+          websocket_framing_state = :read_frame_length_127
+        else
+          if mask
+            websocket_framing_state = :read_frame_mask
+          else
+            websocket_framing_state = :read_frame_payload
+          end
+        end
+      elsif websocket_framing_state == :read_frame_length_126 && input_buffer.length >= 2
+        bytes_packed = input_buffer.slice!(0, 2)
+        plength = bytes_packed.unpack("n")[0]
+        if mask
+          websocket_framing_state = :read_frame_mask
+        else
+          websocket_framing_state = :read_frame_payload
+        end
+      elsif websocket_framing_state == :read_frame_length_127 && input_buffer.length >= 8
+        bytes_packed = input_buffer.slice!(0, 8)
+        (high, low) = bytes_unpacked.unpack("NN")
+        plength = high * (2 ** 32) + low
+        if mask
+          websocket_framing_state = :read_frame_mask
+        else
+          websocket_framing_state = :read_frame_payload
+        end
+      elsif websocket_framing_state == :read_frame_mask && input_buffer.length >= 4
+        mask_key = input_buffer.slice!(0, 4).unpack("C*")
+        websocket_framing_state = :read_frame_payload
+      elsif websocket_framing_state == :read_frame_payload && input_buffer.length >= plength
+        payload_raw = input_buffer.slice!(0, plength)
+        if mask
+          payload = apply_mask(payload_raw, mask_key)
+        else
+          payload = payload_raw
+        end
+        case opcode
+          when $OPCODE_TEXT, $OPCODE_BINARY
+          when $OPCODE_CLOSE
+            raise "close"
+          when $OPCODE_PING
+            raise "received ping, which is not supported"
+          when $OPCODE_PONG
+            raise "received pong, which is not supported"
+          else
+            raise "received unknown opcode: %d" % opcode
+        end
+        websocket_framing_state = :read_frame_type
+      end
+    else
+      if input_buffer.length > 0
+        payload = input_buffer.slice!(0, input_buffer.length)
+      end
+    end
+    if payload
+      #puts "buffer"
+      #puts input_buffer.inspect
+      #puts "state"
+      #puts websocket_framing_state.inspect
+      #puts "opcode"
+      #puts opcode.inspect
+      #puts "mask"
+      #puts mask.inspect
+      #puts "mask key"
+      #puts mask_key.inspect
+      #puts "payload length"
+      #puts plength.inspect
+      puts "payload"
+      puts payload.inspect
+      payload = nil
+    end
+    ready_for_writing.each do |socket_to_read_from|
+      if read_magic
+        puts "write something to client"
+      end
+    end if ready_for_writing
+
+    send_frame(sock, $OPCODE_BINARY, "sent")
+  end
 end
 
 serv = TCPServer.new(7001)
@@ -117,115 +235,12 @@ loop do
     # sock is an accepted socket.
     sock = serv.accept_nonblock
     Thread.new {
-      i = 0
-      handshake_complete = false
-      read_data = false
-      loop do
-        begin
-          if handshake_complete
-            loop do
-              begin
-                partial_input = StringIO.new(sock.read_nonblock(65536))
-                bytes = partial_input.read(2).unpack("C*")
-                fin = (bytes[0] & 0x80) != 0
-                opcode = bytes[0] & 0x0f
-                mask = (bytes[1] & 0x80) != 0
-                plength = bytes[1] & 0x7f
-                if plength == 126
-                  bytes = partial_input.read(2)
-                  plength = bytes.unpack("n")[0]
-                elsif plength == 127
-                  bytes = partial_input.read(8)
-                  (high, low) = bytes.unpack("NN")
-                  plength = high * (2 ** 32) + low
-                end
-                mask_key = mask ? partial_input.read(4).unpack("C*") : nil
-                payload = partial_input.read(plength)
-                payload = apply_mask(payload, mask_key) if mask
-                case opcode
-                  when $OPCODE_TEXT
-                    puts force_encoding(payload, "UTF-8")
-                    read_data = true
-                  when $OPCODE_BINARY
-                    raise "received binary data, which is not supported"
-                  when $OPCODE_CLOSE
-                    raise "close"
-                  when $OPCODE_PING
-                    raise "received ping, which is not supported"
-                  when $OPCODE_PONG
-                    raise "received pong, which is not supported"
-                  else
-                    raise "received unknown opcode: %d" % opcode
-                end
-              rescue Errno::EAGAIN => e
-                puts "no read data"
-              end
-
-              json = "{[" + ("1," * 1) + "0]}"
-
-              send_frame(sock, $OPCODE_BINARY, json)
-
-              sleep 1
-            end
-          else
-            IO.select([sock])
-
-            input_buffer = String.new
-            request_headers = {}
-
-            loop do
-              begin
-                partial_input = sock.read_nonblock(1024)
-                input_buffer += partial_input
-              rescue EOFError => e
-                puts "read input done"
-                puts e.inspect
-              rescue Errno::EAGAIN => e
-                break
-              rescue => e
-                puts e.inspect
-              end
-            end
-
-            lines = input_buffer.split("\n")
-
-            lines.each { |line|
-              puts line.inspect
-              parts = line.split(":")
-              if parts.length == 2
-                request_headers[parts[0]] = parts[1].strip
-              else
-                puts line
-              end
-            }
-
-            if key = request_headers["Sec-WebSocket-Key"]
-              s = StringIO.new
-              s.write("HTTP/1.1 101 Switching Protocols" + "\r\n")
-              s.write("Upgrade: websocket" + "\r\n")
-              s.write("Connection: Upgrade" + "\r\n")
-              s.write("Sec-WebSocket-Accept: " + create_web_socket_accept(key) + "\r\n")
-              s.write("Sec-WebSocket-Protocol: binary" + "\r\n")
-              s.write("\r\n")
-
-              puts s.string.inspect
-
-              sock.write(s.string)
-
-              handshake_complete = true
-            end
-          end
-        rescue IOError, SocketError, SystemCallError => e
-          puts "inner"
-          puts e.inspect
-          break;
-        rescue => e
-          puts "inner oops"
-          puts e.inspect
-          sleep 1
-        end
+      begin
+        handle_client(sock)
+      rescue => e
+        puts e.inspect
+        puts e.backtrace.join("\n")
       end
-      puts "closing connection"
     }
   rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
     puts "outer"
@@ -235,56 +250,12 @@ loop do
   end
 end
 
-=begin
-
-<<<
-GET / HTTP/1.1
-Upgrade: websocket
-Connection: Upgrade
-Host: emscripten.risingcode.com:7001
-Origin: http://emscripten.risingcode.com
-Sec-WebSocket-Protocol: binary
-Sec-WebSocket-Key: VYIlpy3LRRYY0eGO8YukxQ==
-Sec-WebSocket-Version: 13
-Sec-WebSocket-Extensions: x-webkit-deflate-frame
-
->>>
-
-HTTP/1.1 101 Switching Protocols
-Upgrade: websocket
-Connection: Upgrade
-Sec-WebSocket-Accept: HSmrc0sMlYUkAGmm5OPpG2HaGWk=
-Sec-WebSocket-Protocol: chat
-
-
-
-irb(main):009:0> sha1 = Digest::SHA1.new
-=> #<Digest::SHA1: da39a3ee5e6b4b0d3255bfef95601890afd80709>
-irb(main):010:0> sha1.digest "foo"
-=> "\v\xEE\xC7\xB5\xEA?\x0F\xDB\xC9]\r\xD4\x7F<[\xC2u\xDA\x8A3"
-irb(main):011:0> magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-=> "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-irb(main):012:0> key = "x3JJHMbDL1EzLkh9GBhXDw=="
-=> "x3JJHMbDL1EzLkh9GBhXDw=="
-irb(main):013:0> message = key + magic
-=> "x3JJHMbDL1EzLkh9GBhXDw==258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-irb(main):014:0> sha1.digest message
-=> "\x1D)\xABsK\f\x95\x85$\x00i\xA6\xE4\xE3\xE9\ea\xDA\x19i"
-irb(main):015:0> digested = sha1.digest message
-=> "\x1D)\xABsK\f\x95\x85$\x00i\xA6\xE4\xE3\xE9\ea\xDA\x19i"
-irb(main):016:0> require "base64"
-=> true
-irb(main):017:0> enc = Base64.encode(digested)
-NoMethodError: undefined method `encode' for Base64:Module
-        from (irb):17
-        from /home/jbardin/.rbenv/versions/1.9.3-p0/bin/irb:12:in `<main>'
-irb(main):018:0> enc = Base64.encode64(digested)          
-=> "HSmrc0sMlYUkAGmm5OPpG2HaGWk=\n"
-irb(main):019:0> 
-
-
-
-
-=end
-
 # https://github.com/gimite/web-socket-ruby/blob/master/lib/web_socket.rb
+# http://bogomips.org/sunshowers.git/tree/lib/sunshowers/io.rb?id=000a0fbb6fd04ed2cf75aba4117df6755d71f895
+# http://rainbows.rubyforge.org/sunshowers/Sunshowers/IO.html
+# https://github.com/gimite/web-socket-ruby/blob/master/lib/web_socket.rb
+# http://www.whatwg.org/specs/web-socket-protocol/
+# http://www.altdevblogaday.com/2012/01/23/writing-your-own-websocket-server/
+# http://www.htmlgoodies.com/html5/tutorials/making-html5-websockets-work.html
+# https://developer.mozilla.org/en-US/docs/WebSockets/Writing_WebSocket_client_applications
+# https://github.com/igrigorik/em-websocket/blob/master/lib/em-websocket/handshake04.rb
