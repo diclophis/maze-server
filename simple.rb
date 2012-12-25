@@ -13,12 +13,32 @@ $OPCODE_BINARY = 0x02
 $OPCODE_CLOSE = 0x08
 $OPCODE_PING = 0x09
 $OPCODE_PONG = 0x0a
+$CRLF = "\r\n"
+$BYTES_AT_A_TIME = 3
 
-def create_web_socket_accept(key)
+def create_websocket_accept_token(key)
   sha1 = Digest::SHA1.new
   message = key + $WEB_SOCKET_MAGIC
   digested = sha1.digest message
   Base64.encode64(digested).strip
+end
+
+def write_websocket_handshake(io, accept_token)
+  s = String.new
+  s << "HTTP/1.1 101 Switching Protocols" + $CRLF
+  s << "Upgrade: websocket" + $CRLF
+  s << "Connection: Upgrade" + $CRLF
+  s << "Sec-WebSocket-Accept: " + accept_token + $CRLF
+  s << "Sec-WebSocket-Protocol: binary" + $CRLF 
+  s << $CRLF 
+  loop do
+    ready_for_reading, ready_for_writing, errored = IO.select(nil, [io])
+    ready_for_writing.each do |socket_to_write_to|
+      bytes_to_write = s.slice!(0, $BYTES_AT_A_TIME)
+      bytes_written = socket_to_write_to.write(bytes_to_write)
+    end
+    break if s.length == 0 #NOTE: stop writing once we have delivered the entire header response
+  end
 end
 
 def force_encoding(str, encoding)
@@ -69,8 +89,6 @@ def send_frame(io, opcode, payload)
 end
 
 def handle_client(sock)
-  crlf = "\r\n"
-  bytes_at_a_time = 3
   websocket_framing = false
   read_magic = false
   input_buffer = String.new
@@ -79,7 +97,7 @@ def handle_client(sock)
   loop do # reading HTTP WebSocket headers, or magic
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT)
     ready_for_reading.each do |socket_to_read_from|
-      partial_input = sock.read_nonblock(bytes_at_a_time)
+      partial_input = sock.read_nonblock($BYTES_AT_A_TIME)
       if partial_input.length == 1
         if partial_input == "{"
           read_magic = true
@@ -88,9 +106,9 @@ def handle_client(sock)
       input_buffer << partial_input
     end if ready_for_reading
     break if read_magic #NOTE: break reading because we got the magic byte as first token (non-websocket client)
-    pos_of_end_line = input_buffer.index(crlf)
+    pos_of_end_line = input_buffer.index($CRLF)
     unless pos_of_end_line.nil?
-      line = input_buffer.slice!(0, pos_of_end_line + crlf.length).strip
+      line = input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
       break if line.length == 0 #NOTE: break reading because we are at blank line at head of HTTP headers
       parts = line.split(":")
       if parts.length == 2
@@ -101,21 +119,8 @@ def handle_client(sock)
     end
   end
   if key = request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
-    s = String.new
-    s << "HTTP/1.1 101 Switching Protocols" + crlf 
-    s << "Upgrade: websocket" + crlf 
-    s << "Connection: Upgrade" + crlf 
-    s << "Sec-WebSocket-Accept: " + create_web_socket_accept(key) + crlf
-    s << "Sec-WebSocket-Protocol: binary" + crlf
-    s << crlf 
-    loop do
-      ready_for_reading, ready_for_writing, errored = IO.select(nil, [sock])
-      ready_for_writing.each do |socket_to_write_to|
-        bytes_to_write = s.slice!(0, bytes_at_a_time)
-        bytes_written = socket_to_write_to.write(bytes_to_write)
-      end
-      break if s.length == 0 #NOTE: stop writing once we have delivered the entire header response
-    end
+    raise "only binary websockets are supported" unless request_headers["Sec-WebSocket-Protocol"] == "binary"
+    write_websocket_handshake(sock, create_websocket_accept_token(key))
     websocket_framing = true
   else
     raise "not sure what this is, abort and close" unless read_magic
@@ -132,7 +137,7 @@ def handle_client(sock)
   loop do #NOTE: begin main read/write tick loop
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT) #NOTE: do not wait for write in same thread as read?
     ready_for_reading.each do |socket_to_read_from|
-      partial_input = sock.read_nonblock(bytes_at_a_time)
+      partial_input = sock.read_nonblock($BYTES_AT_A_TIME)
       input_buffer << partial_input
     end if ready_for_reading
     if websocket_framing
@@ -202,18 +207,6 @@ def handle_client(sock)
       end
     end
     if payload
-      #puts "buffer"
-      #puts input_buffer.inspect
-      #puts "state"
-      #puts websocket_framing_state.inspect
-      #puts "opcode"
-      #puts opcode.inspect
-      #puts "mask"
-      #puts mask.inspect
-      #puts "mask key"
-      #puts mask_key.inspect
-      #puts "payload length"
-      #puts plength.inspect
       puts "payload"
       puts payload.inspect
       payload = nil
@@ -223,7 +216,6 @@ def handle_client(sock)
         puts "write something to client"
       end
     end if ready_for_writing
-
     send_frame(sock, $OPCODE_BINARY, "sent")
   end
 end
@@ -243,8 +235,6 @@ loop do
       end
     }
   rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
-    puts "outer"
-    puts e.inspect
     IO.select([serv])
     retry
   end
