@@ -14,7 +14,7 @@ $OPCODE_CLOSE = 0x08
 $OPCODE_PING = 0x09
 $OPCODE_PONG = 0x0a
 $CRLF = "\r\n"
-$BYTES_AT_A_TIME = 3
+$BYTES_AT_A_TIME = (2 ^ 16) - 1
 
 def create_websocket_accept_token(key)
   sha1 = Digest::SHA1.new
@@ -88,7 +88,7 @@ def send_frame(io, opcode, payload)
   io.write(buffer.string)
 end
 
-def handle_client(sock)
+def handle_client(sock, count)
   websocket_framing = false
   read_magic = false
   input_buffer = String.new
@@ -133,6 +133,7 @@ def handle_client(sock)
   mask = nil
   mask_key = nil
   payload = nil
+  sent_open = false
 
   loop do #NOTE: begin main read/write tick loop
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT) #NOTE: do not wait for write in same thread as read?
@@ -207,28 +208,44 @@ def handle_client(sock)
       end
     end
     if payload
-      puts "payload"
+      puts "payload #{count}"
       puts payload.inspect
-      payload = nil
+      #payload = nil
     end
     ready_for_writing.each do |socket_to_read_from|
       if read_magic
         puts "write something to client"
       end
     end if ready_for_writing
-    send_frame(sock, $OPCODE_BINARY, "sent")
+
+    out_frame = ""
+    if sent_open
+      out_frame = "1,"
+    else
+      sent_open = true
+      out_frame = "{\"stream\":["
+    end
+
+    if websocket_framing
+      send_frame(sock, $OPCODE_BINARY, out_frame)
+    else
+      sock.write(out_frame)
+    end
   end
 end
 
 serv = TCPServer.new(7001)
+uid = 0
 
 loop do
   begin
     # sock is an accepted socket.
     sock = serv.accept_nonblock
+    uid += 1
     Thread.new {
       begin
-        handle_client(sock)
+        puts uid.inspect
+        handle_client(sock, uid)
       rescue => e
         puts e.inspect
         puts e.backtrace.join("\n")
@@ -236,6 +253,9 @@ loop do
     }
   rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
     IO.select([serv])
+    puts "wtf"
+    puts e.inspect
+    puts e.backtrace.join("\n")
     retry
   end
 end
@@ -249,3 +269,4 @@ end
 # http://www.htmlgoodies.com/html5/tutorials/making-html5-websockets-work.html
 # https://developer.mozilla.org/en-US/docs/WebSockets/Writing_WebSocket_client_applications
 # https://github.com/igrigorik/em-websocket/blob/master/lib/em-websocket/handshake04.rb
+# https://github.com/brianmario/yajl-ruby
