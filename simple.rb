@@ -134,6 +134,7 @@ def handle_client(sock, count)
   mask_key = nil
   payload = nil
   sent_open = false
+  sent_id = false
 
   loop do #NOTE: begin main read/write tick loop
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT) #NOTE: do not wait for write in same thread as read?
@@ -220,16 +221,23 @@ def handle_client(sock, count)
 
     out_frame = ""
     if sent_open
-      out_frame = "1,"
+      if sent_id
+        out_frame = "1,"
+      else
+        sent_id = true
+        out_frame = "[\"request_registration\", #{count}],"
+      end
     else
       sent_open = true
       out_frame = "{\"stream\":["
     end
 
-    if websocket_framing
-      send_frame(sock, $OPCODE_BINARY, out_frame)
-    else
-      sock.write(out_frame)
+    if out_frame.length > 0
+      if websocket_framing
+        send_frame(sock, $OPCODE_BINARY, out_frame)
+      else
+        sock.write(out_frame)
+      end
     end
   end
 end
