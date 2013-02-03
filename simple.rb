@@ -193,7 +193,7 @@ def handle_client(sock, count)
         case opcode
           when $OPCODE_TEXT, $OPCODE_BINARY
           when $OPCODE_CLOSE
-            raise "close"
+            raise "client sent close request" #TODO: make sure this stops the thread
           when $OPCODE_PING
             raise "received ping, which is not supported"
           when $OPCODE_PONG
@@ -211,7 +211,7 @@ def handle_client(sock, count)
     if payload
       puts "payload #{count}"
       puts payload.inspect
-      #payload = nil
+      payload = nil
     end
     ready_for_writing.each do |socket_to_read_from|
       if read_magic
@@ -222,7 +222,8 @@ def handle_client(sock, count)
     out_frame = ""
     if sent_open
       if sent_id
-        out_frame = "1,"
+        #TODO: send out other player updates
+        #out_frame = "1,"
       else
         sent_id = true
         out_frame = "[\"request_registration\", #{count}],"
@@ -260,10 +261,11 @@ loop do
       end
     }
   rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
+    puts "waiting for connection"
     IO.select([serv])
-    puts "wtf"
-    puts e.inspect
-    puts e.backtrace.join("\n")
+    puts "looping for new connection"
+    #puts e.inspect
+    #puts e.backtrace.join("\n")
     retry
   end
 end
