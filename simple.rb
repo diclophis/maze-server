@@ -89,9 +89,15 @@ def send_frame(io, opcode, payload)
   io.write(buffer.string)
 end
 
-def object_parsed(obj)
-   puts "Sometimes one pays most for the things one gets for nothing. - Albert Einstein"
-   puts obj.inspect
+class Player
+  attr_accessor :player_id
+  def initialize(pid)
+    self.player_id = pid
+  end
+  def call(obj)
+    puts self.player_id.inspect
+    puts obj.inspect
+  end
 end
 
 def handle_client(sock, count)
@@ -102,7 +108,7 @@ def handle_client(sock, count)
   read_json_stream_start = false
   xxx = 0.0
   parser = Yajl::Parser.new(:symbolize_keys => false)
-  parser.on_parse_complete = method(:object_parsed)
+  parser.on_parse_complete = Player.new(count) #method(:object_parsed)
 
   loop do # reading HTTP WebSocket headers, or magic
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT)
@@ -219,8 +225,8 @@ def handle_client(sock, count)
       end
     end
     if payload
-      puts "payload #{count}"
-      puts payload.inspect
+      #puts "payload #{count}"
+      #puts payload.inspect
       #parser << payload
       parser << payload
       payload = nil
@@ -266,7 +272,7 @@ loop do
     uid += 1
     Thread.new {
       begin
-        puts uid.inspect
+        #puts uid.inspect
         handle_client(sock, uid)
       rescue => e
         puts e.inspect
