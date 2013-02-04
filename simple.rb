@@ -274,7 +274,7 @@ def handle_client(sock, count, me)
     end
 
     if out_frame.length > 0
-      puts [me.player_id, out_frame].inspect
+      #puts [me.player_id, out_frame].inspect
       if websocket_framing
         send_frame(sock, $OPCODE_BINARY, out_frame)
       else
