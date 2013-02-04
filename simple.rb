@@ -4,6 +4,7 @@ require 'socket'
 require 'digest'
 require 'base64'
 require 'stringio'
+require 'yajl'
 
 $SELECT_TIMEOUT = 1
 $WEB_SOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -88,16 +89,25 @@ def send_frame(io, opcode, payload)
   io.write(buffer.string)
 end
 
+def object_parsed(obj)
+   puts "Sometimes one pays most for the things one gets for nothing. - Albert Einstein"
+   puts obj.inspect
+end
+
 def handle_client(sock, count)
   websocket_framing = false
   read_magic = false
   input_buffer = String.new
   request_headers = Hash.new
   read_json_stream_start = false
+  xxx = 0.0
+  parser = Yajl::Parser.new(:symbolize_keys => false)
+  parser.on_parse_complete = method(:object_parsed)
+
   loop do # reading HTTP WebSocket headers, or magic
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT)
     ready_for_reading.each do |socket_to_read_from|
-      partial_input = sock.read_nonblock($BYTES_AT_A_TIME)
+      partial_input = sock.read_nonblock(1) #$BYTES_AT_A_TIME)
       if partial_input.length == 1
         if partial_input == "{"
           read_magic = true
@@ -211,6 +221,8 @@ def handle_client(sock, count)
     if payload
       puts "payload #{count}"
       puts payload.inspect
+      #parser << payload
+      parser << payload
       payload = nil
     end
     ready_for_writing.each do |socket_to_read_from|
@@ -223,7 +235,8 @@ def handle_client(sock, count)
     if sent_open
       if sent_id
         #TODO: send out other player updates
-        #out_frame = "1,"
+        xxx += 1.0
+        out_frame = "[\"update_player\", 4000, #{xxx}, 0.0, #{xxx + 1}, 0.0],"
       else
         sent_id = true
         out_frame = "[\"request_registration\", #{count}],"
