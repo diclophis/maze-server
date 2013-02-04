@@ -17,6 +17,8 @@ $OPCODE_PONG = 0x0a
 $CRLF = "\r\n"
 $BYTES_AT_A_TIME = (2 ^ 16) - 1
 
+$users = []
+
 def create_websocket_accept_token(key)
   sha1 = Digest::SHA1.new
   message = key + $WEB_SOCKET_MAGIC
@@ -91,24 +93,38 @@ end
 
 class Player
   attr_accessor :player_id
+  attr_accessor :px
+  attr_accessor :py
+  attr_accessor :tx
+  attr_accessor :ty
+  attr_accessor :registered
   def initialize(pid)
     self.player_id = pid
+    self.registered = false
   end
   def call(obj)
-    puts self.player_id.inspect
-    puts obj.inspect
+    #puts self.inspect
+    #puts obj.inspect
+    if obj["update_player"]
+      self.registered = true
+      self.px = obj["update_player"][0]
+      self.py = obj["update_player"][1]
+      self.tx = obj["update_player"][2]
+      self.ty = obj["update_player"][3]
+    end
   end
 end
 
-def handle_client(sock, count)
+def handle_client(sock, count, me)
   websocket_framing = false
   read_magic = false
   input_buffer = String.new
   request_headers = Hash.new
   read_json_stream_start = false
-  xxx = 0.0
+  #xxx = 0.0
   parser = Yajl::Parser.new(:symbolize_keys => false)
-  parser.on_parse_complete = Player.new(count) #method(:object_parsed)
+  parser.on_parse_complete = me
+
 
   loop do # reading HTTP WebSocket headers, or magic
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT)
@@ -155,7 +171,7 @@ def handle_client(sock, count)
   loop do #NOTE: begin main read/write tick loop
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT) #NOTE: do not wait for write in same thread as read?
     ready_for_reading.each do |socket_to_read_from|
-      partial_input = sock.read_nonblock($BYTES_AT_A_TIME)
+      partial_input = socket_to_read_from.read_nonblock($BYTES_AT_A_TIME)
       input_buffer << partial_input
     end if ready_for_reading
     if websocket_framing
@@ -241,8 +257,13 @@ def handle_client(sock, count)
     if sent_open
       if sent_id
         #TODO: send out other player updates
-        xxx += 1.0
-        out_frame = "[\"update_player\", 4000, #{xxx}, 0.0, #{xxx + 1}, 0.0],"
+        #xxx += 1.0
+        #out_frame = "[\"update_player\", 4000, #{xxx}, 0.0, #{xxx + 1}, 0.0],"
+        $users.each do |user|
+          unless user == me
+            out_frame += "[\"update_player\", #{user.player_id}, #{user.px}, #{user.py}, #{user.tx}, #{user.ty}]," if user.registered
+          end
+        end
       else
         sent_id = true
         out_frame = "[\"request_registration\", #{count}],"
@@ -253,6 +274,7 @@ def handle_client(sock, count)
     end
 
     if out_frame.length > 0
+      puts [me.player_id, out_frame].inspect
       if websocket_framing
         send_frame(sock, $OPCODE_BINARY, out_frame)
       else
@@ -270,13 +292,23 @@ loop do
     # sock is an accepted socket.
     sock = serv.accept_nonblock
     uid += 1
+    mee = Player.new(uid)
+    $users << mee
+    puts "users after connect: " + $users.length.to_s
     Thread.new {
       begin
         #puts uid.inspect
-        handle_client(sock, uid)
+        handle_client(sock, uid, mee)
+      rescue EOFError => e
+        puts mee.inspect
+        $users.delete(mee)
+        puts "users after disconnect: " + $users.length.to_s
       rescue => e
-        puts e.inspect
-        puts e.backtrace.join("\n")
+        #puts mee.inspect
+        #$users.delete(mee)
+        #puts e.inspect
+        #puts e.backtrace.join("\n")
+        puts "WTF!!!!"
       end
     }
   rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
