@@ -6,7 +6,7 @@ require 'base64'
 require 'stringio'
 require 'yajl'
 
-$SELECT_TIMEOUT = 1
+$SELECT_TIMEOUT = 1.000
 $WEB_SOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 $OPCODE_CONTINUATION = 0x00
 $OPCODE_TEXT = 0x01
@@ -15,9 +15,10 @@ $OPCODE_CLOSE = 0x08
 $OPCODE_PING = 0x09
 $OPCODE_PONG = 0x0a
 $CRLF = "\r\n"
-$BYTES_AT_A_TIME = (2 ^ 16) - 1
+$BYTES_AT_A_TIME = 1 #(2 ^ 16) - 1
 
-$users = []
+$users = Array.new 
+$io_to_users = Hash.new
 
 def create_websocket_accept_token(key)
   sha1 = Digest::SHA1.new
@@ -99,11 +100,49 @@ class Player
   attr_accessor :ty
   attr_accessor :registered
   attr_accessor :update
-  def initialize(pid)
+  attr_accessor :request_headers
+  attr_accessor :socket_io
+  attr_accessor :read_magic
+  attr_accessor :got_blank_lines
+  attr_accessor :input_buffer
+  attr_accessor :websocket_framing
+
+  attr_accessor :websocket_framing_state
+  attr_accessor :fin
+  attr_accessor :opcode
+  attr_accessor :plength
+  attr_accessor :mask
+  attr_accessor :mask_key 
+
+  attr_accessor :payload
+  attr_accessor :payload_raw
+  attr_accessor :sent_open
+  attr_accessor :sent_id
+
+  attr_accessor :user_updates
+  attr_accessor :websocket_handshake
+
+  def initialize(pid, socket)
     self.player_id = pid
     self.registered = false
     self.update = 0
+    self.request_headers = Hash.new
+    self.socket_io = socket
+    self.read_magic = false
+    self.input_buffer = String.new
+    self.got_blank_lines = 0
+    self.websocket_framing = false
+
+    self.user_updates = Hash.new
+    self.websocket_framing_state = :read_frame_type
+
+    self.websocket_handshake = false
   end
+
+  def to_io
+    self.socket_io
+  end
+
   def call(obj)
     #puts self.inspect
     #puts obj.inspect
@@ -122,19 +161,147 @@ class Player
       #puts "#{self} is going to #{self.inspect}"
     end
   end
+
+  def process_state_loop_one_read
+    partial_input = self.socket_io.read_nonblock(1)
+    if partial_input.length == 1
+      if partial_input == "{"
+        self.read_magic = true
+      end
+    end
+    self.input_buffer << partial_input
+  end
+
+  def waiting_to_read_magic?
+    self.read_magic == false
+  end
+
+  def perform_required_reading
+    sock = self.socket_io
+    unless self.got_blank_lines > 0
+      if waiting_to_read_magic? then
+        return if self.socket_io.eof?
+        process_state_loop_one_read
+    puts self.input_buffer.inspect
+        return unless waiting_to_read_magic?
+        pos_of_end_line = self.input_buffer.index($CRLF)
+        unless pos_of_end_line.nil?
+          line = input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
+          puts line.inspect
+          self.got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
+          puts self.got_blank_lines
+          #return if self.got_blank_lines > 0
+          parts = line.split(":")
+          if parts.length == 2
+            self.request_headers[parts[0]] = parts[1].strip
+          else
+            #NOTE: not a header, likely the "GET / ..." line, discarded
+          end
+        end
+      end
+
+      return if self.got_blank_lines == 0
+    end
+
+    unless self.read_magic || self.websocket_handshake
+      puts self.inspect
+      if key = request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
+        raise "only binary websockets are supported" unless request_headers["Sec-WebSocket-Protocol"] == "binary"
+        write_websocket_handshake(sock, create_websocket_accept_token(key))
+        self.websocket_framing = true
+        self.websocket_handshake = true
+      else
+        raise "not sure what this is, abort and close" unless self.read_magic
+      end
+    end
+
+      return if self.socket_io.eof?
+      puts "reading"
+      partial_input = self.socket_io.read_nonblock($BYTES_AT_A_TIME)
+      self.input_buffer << partial_input
+
+      if self.websocket_framing
+        puts "reading websocket frame in"
+        if self.websocket_framing_state == :read_frame_type && self.input_buffer.length >= 1
+          byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
+          self.fin = (byte & 0x80) != 0
+          self.opcode = byte & 0x0f
+          self.websocket_framing_state = :read_frame_length
+        elsif self.websocket_framing_state == :read_frame_length && self.input_buffer.length >= 1
+          byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
+          self.mask = (byte & 0x80) != 0
+          self.plength = byte & 0x7f
+          if self.plength == 126
+            self.websocket_framing_state = :read_frame_length_126
+          elsif plength == 127
+            self.websocket_framing_state = :read_frame_length_127
+          else
+            if self.mask
+              self.websocket_framing_state = :read_frame_mask
+            else
+              self.websocket_framing_state = :read_frame_payload
+            end
+          end
+        elsif self.websocket_framing_state == :read_frame_length_126 && self.input_buffer.length >= 2
+          bytes_packed = self.input_buffer.slice!(0, 2)
+          self.plength = bytes_packed.unpack("n")[0]
+          if self.mask
+            self.websocket_framing_state = :read_frame_mask
+          else
+            self.websocket_framing_state = :read_frame_payload
+          end
+        elsif self.websocket_framing_state == :read_frame_length_127 && self.input_buffer.length >= 8
+          bytes_packed = self.input_buffer.slice!(0, 8)
+          (high, low) = bytes_unpacked.unpack("NN")
+          self.plength = high * (2 ** 32) + low
+          if self.mask
+            self.websocket_framing_state = :read_frame_mask
+          else
+            self.websocket_framing_state = :read_frame_payload
+          end
+        elsif self.websocket_framing_state == :read_frame_mask && self.input_buffer.length >= 4
+          self.mask_key = self.input_buffer.slice!(0, 4).unpack("C*")
+          self.websocket_framing_state = :read_frame_payload
+        elsif self.websocket_framing_state == :read_frame_payload && self.input_buffer.length >= self.plength
+          self.payload_raw = self.input_buffer.slice!(0, self.plength)
+          if self.mask
+            self.payload = apply_mask(self.payload_raw, self.mask_key)
+          else
+            self.payload = self.payload_raw
+          end
+          case self.opcode
+            when $OPCODE_TEXT, $OPCODE_BINARY
+            when $OPCODE_CLOSE
+              raise "client sent close request" #TODO: make sure this stops the thread
+            when $OPCODE_PING
+              raise "received ping, which is not supported"
+            when $OPCODE_PONG
+              raise "received pong, which is not supported"
+            else
+              raise "received unknown opcode: %d" % opcode
+          end
+          self.websocket_framing_state = :read_frame_type
+        end
+      end
+
+      puts self.input_buffer.inspect
+
+      puts payload.inspect if self.payload
+    end
+  #end
 end
 
 def handle_client(sock, count, me)
-  websocket_framing = false
-  read_magic = false
-  input_buffer = String.new
-  request_headers = Hash.new
-  read_json_stream_start = false
-  #xxx = 0.0
-  parser = Yajl::Parser.new(:symbolize_keys => false)
-  parser.on_parse_complete = me
 
+  #websocket_framing = false
+  #read_magic = false
+  #input_buffer = String.new
+  #request_headers = Hash.new
+  #read_json_stream_start = false
 
+  #parser = Yajl::Parser.new(:symbolize_keys => false)
+  #parser.on_parse_complete = me
+=begin
   loop do # reading HTTP WebSocket headers, or magic
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT)
     ready_for_reading.each do |socket_to_read_from|
@@ -159,6 +326,9 @@ def handle_client(sock, count, me)
       end
     end
   end
+=end
+
+=begin
   if key = request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
     raise "only binary websockets are supported" unless request_headers["Sec-WebSocket-Protocol"] == "binary"
     write_websocket_handshake(sock, create_websocket_accept_token(key))
@@ -177,13 +347,15 @@ def handle_client(sock, count, me)
   sent_open = false
   sent_id = false
   user_updates = Hash.new
+=end
 
-  loop do #NOTE: begin main read/write tick loop
-    ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT) #NOTE: do not wait for write in same thread as read?
-    ready_for_reading.each do |socket_to_read_from|
-      partial_input = socket_to_read_from.read_nonblock($BYTES_AT_A_TIME)
-      input_buffer << partial_input
-    end if ready_for_reading
+=begin
+#  loop do #NOTE: begin main read/write tick loop
+#    ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT) #NOTE: do not wait for write in same thread as read?
+#    ready_for_reading.each do |socket_to_read_from|
+#      partial_input = socket_to_read_from.read_nonblock($BYTES_AT_A_TIME)
+#      input_buffer << partial_input
+#    end if ready_for_reading
     if websocket_framing
       if websocket_framing_state == :read_frame_type && input_buffer.length >= 1
         byte = input_buffer.slice!(0, 1).unpack("C")[0]
@@ -257,6 +429,7 @@ def handle_client(sock, count, me)
       parser << payload.strip
       payload = nil
     end
+
     ready_for_writing.each do |socket_to_read_from|
       if read_magic
         puts "write something to client"
@@ -296,44 +469,52 @@ def handle_client(sock, count, me)
       end
     end
   end
+=end
 end
 
-serv = TCPServer.new(7001)
-uid = 0
+def main
+  server = TCPServer.new(7001)
+  uid = 0
 
-loop do
-  begin
-    # sock is an accepted socket.
-    sock = serv.accept_nonblock
-    uid += 1
-    mee = Player.new(uid)
-    $users << mee
-    puts "users after connect: " + $users.length.to_s
-    Thread.new {
-      begin
-        #puts uid.inspect
-        handle_client(sock, uid, mee)
-      rescue EOFError => e
-        puts mee.inspect
-        $users.delete(mee)
-        puts "users after disconnect: " + $users.length.to_s
-      rescue => e
-        #puts mee.inspect
-        $users.delete(mee)
-        #puts e.inspect
-        #puts e.backtrace.join("\n")
-        puts "users after disconnect 2: " + $users.length.to_s
+  Thread::abort_on_exception = true
+
+  Thread.new {
+    #begin
+      loop do
+        ready_for_reading, ready_for_writing, errored = IO.select($users, nil, $users, $SELECT_TIMEOUT)
+        #puts [ready_for_reading, ready_for_writing, errored].inspect
+
+        ready_for_reading.each do |user|
+          user.perform_required_reading
+        end if ready_for_reading
       end
-    }
-  rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
-    puts "waiting for connection"
-    IO.select([serv])
-    puts "looping for new connection"
-    #puts e.inspect
-    #puts e.backtrace.join("\n")
-    retry
+    #rescue => e
+    #  puts e.inspect
+    #end
+  }
+
+  loop do
+    begin
+      # socket_io is an accepted socket.
+      socket_io = server.accept_nonblock
+      uid += 1
+      me = Player.new(uid, socket_io)
+      $users << me
+      #Thread.new {
+      #  begin
+      #    handle_client(socket_io, uid, me)
+      #  rescue => e
+      #    $users.delete(me)
+      #  end
+      #}
+    rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
+      IO.select([server])
+      retry
+    end
   end
 end
+
+main
 
 # https://github.com/gimite/web-socket-ruby/blob/master/lib/web_socket.rb
 # http://bogomips.org/sunshowers.git/tree/lib/sunshowers/io.rb?id=000a0fbb6fd04ed2cf75aba4117df6755d71f895
