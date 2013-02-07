@@ -98,19 +98,28 @@ class Player
   attr_accessor :tx
   attr_accessor :ty
   attr_accessor :registered
+  attr_accessor :update
   def initialize(pid)
     self.player_id = pid
     self.registered = false
+    self.update = 0
   end
   def call(obj)
     #puts self.inspect
     #puts obj.inspect
     if obj["update_player"]
       self.registered = true
-      self.px = obj["update_player"][0]
-      self.py = obj["update_player"][1]
-      self.tx = obj["update_player"][2]
-      self.ty = obj["update_player"][3]
+      unless (self.px == obj["update_player"][0] &&
+        self.py == obj["update_player"][1] &&
+        self.tx == obj["update_player"][2] &&
+        self.ty == obj["update_player"][3])
+        self.update += 1
+        self.px = obj["update_player"][0]
+        self.py = obj["update_player"][1]
+        self.tx = obj["update_player"][2]
+        self.ty = obj["update_player"][3]
+      end
+      #puts "#{self} is going to #{self.inspect}"
     end
   end
 end
@@ -167,6 +176,7 @@ def handle_client(sock, count, me)
   payload = nil
   sent_open = false
   sent_id = false
+  user_updates = Hash.new
 
   loop do #NOTE: begin main read/write tick loop
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT) #NOTE: do not wait for write in same thread as read?
@@ -244,7 +254,7 @@ def handle_client(sock, count, me)
       #puts "payload #{count}"
       #puts payload.inspect
       #parser << payload
-      parser << payload
+      parser << payload.strip
       payload = nil
     end
     ready_for_writing.each do |socket_to_read_from|
@@ -261,7 +271,11 @@ def handle_client(sock, count, me)
         #out_frame = "[\"update_player\", 4000, #{xxx}, 0.0, #{xxx + 1}, 0.0],"
         $users.each do |user|
           unless user == me
-            out_frame += "[\"update_player\", #{user.player_id}, #{user.px}, #{user.py}, #{user.tx}, #{user.ty}]," if user.registered
+            if user_updates[user].nil? || user.update > user_updates[user] then
+              puts "need to tell #{me} about #{user}"
+              user_updates[user] = user.update
+              out_frame += "[\"update_player\",#{user.player_id},#{user.px},#{user.py},#{user.tx},#{user.ty}]," if user.registered
+            end
           end
         end
       else
@@ -274,7 +288,7 @@ def handle_client(sock, count, me)
     end
 
     if out_frame.length > 0
-      #puts [me.player_id, out_frame].inspect
+      puts [me.player_id, out_frame].inspect
       if websocket_framing
         send_frame(sock, $OPCODE_BINARY, out_frame)
       else
@@ -305,10 +319,10 @@ loop do
         puts "users after disconnect: " + $users.length.to_s
       rescue => e
         #puts mee.inspect
-        #$users.delete(mee)
+        $users.delete(mee)
         #puts e.inspect
         #puts e.backtrace.join("\n")
-        puts "WTF!!!!"
+        puts "users after disconnect 2: " + $users.length.to_s
       end
     }
   rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
