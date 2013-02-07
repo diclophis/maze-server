@@ -122,6 +122,8 @@ class Player
   attr_accessor :user_updates
   attr_accessor :websocket_handshake
 
+  attr_accessor :parser
+
   def initialize(pid, socket)
     self.player_id = pid
     self.registered = false
@@ -137,6 +139,8 @@ class Player
     self.websocket_framing_state = :read_frame_type
 
     self.websocket_handshake = false
+    self.parser = Yajl::Parser.new(:symbolize_keys => false)
+    self.parser.on_parse_complete = self
   end
 
   def to_io
@@ -182,15 +186,11 @@ class Player
       if waiting_to_read_magic? then
         return if self.socket_io.eof?
         process_state_loop_one_read
-    puts self.input_buffer.inspect
         return unless waiting_to_read_magic?
         pos_of_end_line = self.input_buffer.index($CRLF)
         unless pos_of_end_line.nil?
           line = input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
-          puts line.inspect
           self.got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
-          puts self.got_blank_lines
-          #return if self.got_blank_lines > 0
           parts = line.split(":")
           if parts.length == 2
             self.request_headers[parts[0]] = parts[1].strip
@@ -200,11 +200,10 @@ class Player
         end
       end
 
-      return if self.got_blank_lines == 0
+      return if self.got_blank_lines == 0 && waiting_to_read_magic?
     end
 
     unless self.read_magic || self.websocket_handshake
-      puts self.inspect
       if key = request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
         raise "only binary websockets are supported" unless request_headers["Sec-WebSocket-Protocol"] == "binary"
         write_websocket_handshake(sock, create_websocket_accept_token(key))
@@ -215,82 +214,133 @@ class Player
       end
     end
 
-      return if self.socket_io.eof?
-      puts "reading"
-      partial_input = self.socket_io.read_nonblock($BYTES_AT_A_TIME)
-      self.input_buffer << partial_input
+    partial_input = self.socket_io.read_nonblock($BYTES_AT_A_TIME)
+    self.input_buffer << partial_input
 
-      if self.websocket_framing
-        puts "reading websocket frame in"
-        if self.websocket_framing_state == :read_frame_type && self.input_buffer.length >= 1
-          byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
-          self.fin = (byte & 0x80) != 0
-          self.opcode = byte & 0x0f
-          self.websocket_framing_state = :read_frame_length
-        elsif self.websocket_framing_state == :read_frame_length && self.input_buffer.length >= 1
-          byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
-          self.mask = (byte & 0x80) != 0
-          self.plength = byte & 0x7f
-          if self.plength == 126
-            self.websocket_framing_state = :read_frame_length_126
-          elsif plength == 127
-            self.websocket_framing_state = :read_frame_length_127
-          else
-            if self.mask
-              self.websocket_framing_state = :read_frame_mask
-            else
-              self.websocket_framing_state = :read_frame_payload
+    if self.websocket_framing
+      self.payload = self.extract_websocket_payload
+      if self.payload == "{" && self.read_magic == false
+        self.read_magic true
+      end
+    else
+      self.payload = self.extract_native_payload
+    end
+
+    if self.payload
+      #puts "payload #{payload}"
+      #puts payload.inspect
+      #parser << payload
+      self.parser << self.payload.strip
+      self.payload = nil
+    end
+  end
+
+  def extract_native_payload
+    if self.input_buffer.length > 0
+      self.input_buffer.slice!(0, self.input_buffer.length)
+    end
+  end
+
+  def perform_required_writing(usrs)
+    return unless self.read_magic
+    out_frame = ""
+    if self.sent_open
+      if self.sent_id
+        usrs.each do |usr|
+          unless usr == self
+            if self.user_updates[usr].nil? || usr.update > self.user_updates[usr] then
+              puts "need to tell #{self} about #{usr}"
+              self.user_updates[usr] = usr.update
+              out_frame += "[\"update_player\",#{usr.player_id},#{usr.px},#{usr.py},#{usr.tx},#{usr.ty}]," if usr.registered
             end
           end
-        elsif self.websocket_framing_state == :read_frame_length_126 && self.input_buffer.length >= 2
-          bytes_packed = self.input_buffer.slice!(0, 2)
-          self.plength = bytes_packed.unpack("n")[0]
-          if self.mask
-            self.websocket_framing_state = :read_frame_mask
-          else
-            self.websocket_framing_state = :read_frame_payload
-          end
-        elsif self.websocket_framing_state == :read_frame_length_127 && self.input_buffer.length >= 8
-          bytes_packed = self.input_buffer.slice!(0, 8)
-          (high, low) = bytes_unpacked.unpack("NN")
-          self.plength = high * (2 ** 32) + low
-          if self.mask
-            self.websocket_framing_state = :read_frame_mask
-          else
-            self.websocket_framing_state = :read_frame_payload
-          end
-        elsif self.websocket_framing_state == :read_frame_mask && self.input_buffer.length >= 4
-          self.mask_key = self.input_buffer.slice!(0, 4).unpack("C*")
+        end
+      else
+        self.sent_id = true
+        out_frame = "[\"request_registration\", #{self.player_id}],"
+      end
+    else
+      self.sent_open = true
+      out_frame = "{\"stream\":["
+    end
+
+    if out_frame.length > 0
+      if self.websocket_framing
+        send_frame(self.socket_io, $OPCODE_BINARY, out_frame)
+      else
+        self.socket_io.write(out_frame)
+      end
+    end
+  end
+
+  def extract_websocket_payload
+    paydirt = nil
+    if self.websocket_framing_state == :read_frame_type && self.input_buffer.length >= 1
+      byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
+      self.fin = (byte & 0x80) != 0
+      self.opcode = byte & 0x0f
+      self.websocket_framing_state = :read_frame_length
+    elsif self.websocket_framing_state == :read_frame_length && self.input_buffer.length >= 1
+      byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
+      self.mask = (byte & 0x80) != 0
+      self.plength = byte & 0x7f
+      if self.plength == 126
+        self.websocket_framing_state = :read_frame_length_126
+      elsif plength == 127
+        self.websocket_framing_state = :read_frame_length_127
+      else
+        if self.mask
+          self.websocket_framing_state = :read_frame_mask
+        else
           self.websocket_framing_state = :read_frame_payload
-        elsif self.websocket_framing_state == :read_frame_payload && self.input_buffer.length >= self.plength
-          self.payload_raw = self.input_buffer.slice!(0, self.plength)
-          if self.mask
-            self.payload = apply_mask(self.payload_raw, self.mask_key)
-          else
-            self.payload = self.payload_raw
-          end
-          case self.opcode
-            when $OPCODE_TEXT, $OPCODE_BINARY
-            when $OPCODE_CLOSE
-              raise "client sent close request" #TODO: make sure this stops the thread
-            when $OPCODE_PING
-              raise "received ping, which is not supported"
-            when $OPCODE_PONG
-              raise "received pong, which is not supported"
-            else
-              raise "received unknown opcode: %d" % opcode
-          end
-          self.websocket_framing_state = :read_frame_type
         end
       end
-
-      puts self.input_buffer.inspect
-
-      puts payload.inspect if self.payload
+    elsif self.websocket_framing_state == :read_frame_length_126 && self.input_buffer.length >= 2
+      bytes_packed = self.input_buffer.slice!(0, 2)
+      self.plength = bytes_packed.unpack("n")[0]
+      if self.mask
+        self.websocket_framing_state = :read_frame_mask
+      else
+        self.websocket_framing_state = :read_frame_payload
+      end
+    elsif self.websocket_framing_state == :read_frame_length_127 && self.input_buffer.length >= 8
+      bytes_packed = self.input_buffer.slice!(0, 8)
+      (high, low) = bytes_unpacked.unpack("NN")
+      self.plength = high * (2 ** 32) + low
+      if self.mask
+        self.websocket_framing_state = :read_frame_mask
+      else
+        self.websocket_framing_state = :read_frame_payload
+      end
+    elsif self.websocket_framing_state == :read_frame_mask && self.input_buffer.length >= 4
+      self.mask_key = self.input_buffer.slice!(0, 4).unpack("C*")
+      self.websocket_framing_state = :read_frame_payload
+    elsif self.websocket_framing_state == :read_frame_payload && self.input_buffer.length >= self.plength
+      self.payload_raw = self.input_buffer.slice!(0, self.plength)
+      if self.mask
+        paydirt = apply_mask(self.payload_raw, self.mask_key)
+      else
+        paydirt = self.payload_raw
+      end
+      case self.opcode
+        when $OPCODE_TEXT, $OPCODE_BINARY
+        when $OPCODE_CLOSE
+          puts "client sent close request" #TODO: make sure this stops the thread
+        when $OPCODE_PING
+          puts "received ping, which is not supported"
+        when $OPCODE_PONG
+          puts "received pong, which is not supported"
+        else
+          puts "received unknown opcode: %d" % self.opcode
+      end
+      self.websocket_framing_state = :read_frame_type
     end
-  #end
+
+    paydirt
+  end
 end
 
+=begin
 def handle_client(sock, count, me)
 
   #websocket_framing = false
@@ -299,8 +349,6 @@ def handle_client(sock, count, me)
   #request_headers = Hash.new
   #read_json_stream_start = false
 
-  #parser = Yajl::Parser.new(:symbolize_keys => false)
-  #parser.on_parse_complete = me
 =begin
   loop do # reading HTTP WebSocket headers, or magic
     ready_for_reading, ready_for_writing, errored = IO.select([sock], [], [sock], $SELECT_TIMEOUT)
@@ -469,8 +517,8 @@ def handle_client(sock, count, me)
       end
     end
   end
-=end
 end
+=end
 
 def main
   server = TCPServer.new(7001)
@@ -481,12 +529,15 @@ def main
   Thread.new {
     #begin
       loop do
-        ready_for_reading, ready_for_writing, errored = IO.select($users, nil, $users, $SELECT_TIMEOUT)
+        ready_for_reading, ready_for_writing, errored = IO.select($users, $users, $users, $SELECT_TIMEOUT)
         #puts [ready_for_reading, ready_for_writing, errored].inspect
 
         ready_for_reading.each do |user|
           user.perform_required_reading
         end if ready_for_reading
+        ready_for_writing.each do |user|
+          user.perform_required_writing($users)
+        end if ready_for_writing
       end
     #rescue => e
     #  puts e.inspect
@@ -508,6 +559,7 @@ def main
       #  end
       #}
     rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
+      puts "recv()"
       IO.select([server])
       retry
     end
