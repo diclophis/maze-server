@@ -214,8 +214,13 @@ class Player
       end
     end
 
-    partial_input = self.socket_io.read_nonblock($BYTES_AT_A_TIME)
-    self.input_buffer << partial_input
+    begin
+      return if self.socket_io.eof?
+      partial_input = self.socket_io.read_nonblock($BYTES_AT_A_TIME)
+      self.input_buffer << partial_input
+    rescue Errno::EWOULDBLOCK => e
+      return
+    end
 
     if self.websocket_framing
       self.payload = self.extract_websocket_payload
@@ -227,10 +232,12 @@ class Player
     end
 
     if self.payload
-      #puts "payload #{payload}"
+      puts "payload #{payload}"
       #puts payload.inspect
-      #parser << payload
-      self.parser << self.payload.strip
+      begin
+        self.parser << self.payload.strip
+      rescue Yajl::ParseError => e
+      end
       self.payload = nil
     end
   end
@@ -268,7 +275,11 @@ class Player
       if self.websocket_framing
         send_frame(self.socket_io, $OPCODE_BINARY, out_frame)
       else
-        self.socket_io.write(out_frame)
+        begin
+          self.socket_io.write(out_frame)
+        rescue Errno::ECONNRESET => e
+          return
+        end
       end
     end
   end
@@ -529,15 +540,16 @@ def main
   Thread.new {
     #begin
       loop do
-        ready_for_reading, ready_for_writing, errored = IO.select($users, $users, $users, $SELECT_TIMEOUT)
+        ready_for_reading, ready_for_writing, errored = IO.select($users, nil, $users, $SELECT_TIMEOUT)
         #puts [ready_for_reading, ready_for_writing, errored].inspect
 
         ready_for_reading.each do |user|
           user.perform_required_reading
-        end if ready_for_reading
-        ready_for_writing.each do |user|
           user.perform_required_writing($users)
-        end if ready_for_writing
+        end if ready_for_reading
+        #ready_for_writing.each do |user|
+        #  user.perform_required_writing($users)
+        #end if ready_for_writing
       end
     #rescue => e
     #  puts e.inspect
