@@ -5,6 +5,7 @@ require 'digest'
 require 'base64'
 require 'stringio'
 require 'yajl'
+require 'io/wait'
 
 $SELECT_TIMEOUT = 1.000
 $WEB_SOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -167,7 +168,7 @@ class Player
   end
 
   def process_state_loop_one_read
-    partial_input = self.socket_io.read_nonblock(1)
+    partial_input = self.socket_io.read(1) #_nonblock(1)
     if partial_input.length == 1
       if partial_input == "{"
         self.read_magic = true
@@ -181,12 +182,20 @@ class Player
   end
 
   def perform_required_reading
+    #ioctl(m_Socket, FIONREAD, &bytesAvailableThisTick)
+
     sock = self.socket_io
+
+    return if sock.closed?
+    #a = sock.ready?
+    a = sock.nread
+    puts a.inspect
+    return 0 if a == 0
     unless self.got_blank_lines > 0
       if waiting_to_read_magic? then
         return if self.socket_io.eof?
         process_state_loop_one_read
-        return unless waiting_to_read_magic?
+        return self.input_buffer.length unless waiting_to_read_magic?
         pos_of_end_line = self.input_buffer.index($CRLF)
         unless pos_of_end_line.nil?
           line = input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
@@ -200,7 +209,7 @@ class Player
         end
       end
 
-      return if self.got_blank_lines == 0 && waiting_to_read_magic?
+      return self.input_buffer.length if self.got_blank_lines == 0 && waiting_to_read_magic?
     end
 
     unless self.read_magic || self.websocket_handshake
@@ -214,13 +223,13 @@ class Player
       end
     end
 
-    begin
+    #begin
       return if self.socket_io.eof?
-      partial_input = self.socket_io.read_nonblock($BYTES_AT_A_TIME)
+      partial_input = self.socket_io.read(1) #_nonblock($BYTES_AT_A_TIME)
       self.input_buffer << partial_input
-    rescue Errno::EWOULDBLOCK => e
-      return
-    end
+    #rescue Errno::EWOULDBLOCK => e
+    #  return
+    #end
 
     if self.websocket_framing
       self.payload = self.extract_websocket_payload
@@ -232,7 +241,7 @@ class Player
     end
 
     if self.payload
-      puts "payload #{payload}"
+      #puts "payload #{payload}"
       #puts payload.inspect
       begin
         self.parser << self.payload.strip
@@ -240,6 +249,8 @@ class Player
       end
       self.payload = nil
     end
+
+    self.input_buffer.length
   end
 
   def extract_native_payload
@@ -275,11 +286,11 @@ class Player
       if self.websocket_framing
         send_frame(self.socket_io, $OPCODE_BINARY, out_frame)
       else
-        begin
+        #begin
           self.socket_io.write(out_frame)
-        rescue Errno::ECONNRESET => e
-          return
-        end
+        #rescue Errno::ECONNRESET => e
+        #  return
+        #end
       end
     end
   end
@@ -541,15 +552,19 @@ def main
     #begin
       loop do
         ready_for_reading, ready_for_writing, errored = IO.select($users, nil, $users, $SELECT_TIMEOUT)
-        #puts [ready_for_reading, ready_for_writing, errored].inspect
+        puts [(ready_for_reading.length if ready_for_reading), (ready_for_writing.length if ready_for_writing), (errored.length if errored)].inspect
 
         ready_for_reading.each do |user|
-          user.perform_required_reading
-          user.perform_required_writing($users)
+          bytes_read = user.perform_required_reading
+          bytes_written = user.perform_required_writing($users)
+          $users.delete(user) if (bytes_read.nil?) # or bytes_written.nil?)
         end if ready_for_reading
+
         #ready_for_writing.each do |user|
         #  user.perform_required_writing($users)
         #end if ready_for_writing
+
+        sleep 0.1
       end
     #rescue => e
     #  puts e.inspect
