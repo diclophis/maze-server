@@ -18,7 +18,6 @@ $OPCODE_PONG = 0x0a
 $CRLF = "\r\n"
 #$BYTES_AT_A_TIME = (2 ^ 16) - 1
 
-$users = Array.new 
 $io_to_users = Hash.new
 
 def create_websocket_accept_token(key)
@@ -409,61 +408,48 @@ class Player
 end
 
 def main
+  connections = Array.new 
   server = TCPServer.new(7002)
   uid = 0
 
   Thread::abort_on_exception = true
 
   loop do
-    #Thread.new do
-      #loop do
-        begin
-          ready_for_reading, ready_for_writing, errored = IO.select([server] + $users, nil, $users, $SELECT_TIMEOUT)
-          #puts ["IO.select", (ready_for_reading.length if ready_for_reading), (ready_for_writing.length if ready_for_writing), (errored.length if errored)].inspect
+    begin
+      ready_for_reading, ready_for_writing, errored = IO.select([server] + connections, nil, connections, $SELECT_TIMEOUT)
+      #puts ["IO.select", (ready_for_reading.length if ready_for_reading), (ready_for_writing.length if ready_for_writing), (errored.length if errored)].inspect
 
-          if ready_for_reading && ready_for_reading.index(server) != nil then
-            puts "accept"
-            socket_io = server.accept_nonblock
-            uid += 1
-            me = Player.new(uid, socket_io)
-            $users << me
-            ready_for_reading.delete(server)
-          end
+      if ready_for_reading && ready_for_reading.index(server) != nil then
+        puts "accept"
+        socket_io = server.accept_nonblock
+        uid += 1
+        me = Player.new(uid, socket_io)
+        connections << me
+        ready_for_reading.delete(server)
+      end
 
-          ready_for_reading.each do |user|
-            bytes_read = user.perform_required_reading
-            if (bytes_read.nil?)
-              puts ["quit on read", user.player_id, bytes_read].inspect
-              $users.delete(user) 
-            end
-          end if ready_for_reading
-
-          $users.each do |user|
-            user.perform_required_writing($users)
-            bytes_written = user.perform_required_writing($users)
-            if (bytes_written.nil?)
-              puts ["quit on write", user.player_id, bytes_written].inspect
-              $users.delete(user)
-            end
-          end
-
-          errored.each do |user|
-            puts ["quit on errored", user.player_id].inspect
-            $users.delete(user)
-          end if errored
+      ready_for_reading.each do |user|
+        bytes_read = user.perform_required_reading
+        if (bytes_read.nil?)
+          puts ["quit on read", user.player_id, bytes_read].inspect
+          connections.delete(user) 
         end
-      #end
-    #end
+      end if ready_for_reading
 
-    #loop do
-      #begin
-        # socket_io is an accepted socket.
-      #rescue Errno::EAGAIN, Errno::EWOULDBLOCK, Errno::ECONNABORTED, Errno::EPROTO, Errno::EINTR => e
-      #  puts "recv()"
-      #  IO.select([server], nil, nil, 0.1)
-      #  retry
-      #end
-    #end
+      connections.each do |user|
+        #user.perform_required_writing(connections)
+        bytes_written = user.perform_required_writing(connections)
+        if (bytes_written.nil?)
+          puts ["quit on write", user.player_id, bytes_written].inspect
+          users.delete(user)
+        end
+      end
+
+      errored.each do |user|
+        puts ["quit on errored", user.player_id].inspect
+        users.delete(user)
+      end if errored
+    end
   end
 end
 
