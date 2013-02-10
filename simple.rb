@@ -35,8 +35,7 @@ def write_websocket_handshake(io, accept_token)
   loop do
     ready_for_reading, ready_for_writing, errored = IO.select(nil, [io])
     ready_for_writing.each do |socket_to_write_to|
-      bytes_to_write = s.slice!(0, s.length) #s.slice!(0, $BYTES_AT_A_TIME)
-      #puts bytes_to_write.inspect
+      bytes_to_write = s.slice!(0, s.length)
       bytes_written = socket_to_write_to.write(bytes_to_write)
     end
     break if s.length == 0 #NOTE: stop writing once we have delivered the entire header response
@@ -69,9 +68,6 @@ def apply_mask(payload, mask_key)
 end
 
 def send_frame(io, opcode, payload)
-  #TODO: figure out if force_encoding(payload) is required ???
-  #payload = force_encoding(payload.dup(), "ASCII-8BIT")
-  #buffer = StringIO.new(force_encoding("", "ASCII-8BIT"))
   buffer = StringIO.new
   byte1 = opcode | 0b10000000
   write_byte(io, byte1)
@@ -86,7 +82,7 @@ def send_frame(io, opcode, payload)
     buffer.write([payload.bytesize / (2 ** 32), payload.bytesize % (2 ** 32)].pack("NN"))
   end
 
-  buffer.write(payload) #TODO: figure out if binary(payload) ???
+  buffer.write(payload)
   io.write(buffer.string)
 end
 
@@ -123,6 +119,8 @@ class Player
   attr_accessor :parser
   attr_accessor :bytes_available
   attr_accessor :read_something
+
+  attr_accessor :get
 
   def initialize(pid, socket)
     self.player_id = pid
@@ -167,7 +165,7 @@ class Player
   end
 
   def process_state_loop_one_read
-    partial_input = self.socket_io.read(1) #_nonblock(1)
+    partial_input = self.socket_io.read(1)
     if partial_input.length == 1
       if partial_input == "{"
         self.read_magic = true
@@ -192,7 +190,6 @@ class Player
     unless self.got_blank_lines > 0
       if waiting_to_read_magic? then
         return if self.socket_io.eof?
-
         partial_input = self.socket_io.read(self.bytes_available)
         if partial_input.length > 0
           if partial_input[0] == "{"
@@ -213,6 +210,7 @@ class Player
               self.request_headers[parts[0]] = parts[1].strip
             else
               #NOTE: not a header, likely the "GET / ..." line, discarded
+              self.get = line
             end
           end
         end
