@@ -16,7 +16,7 @@ $OPCODE_CLOSE = 0x08
 $OPCODE_PING = 0x09
 $OPCODE_PONG = 0x0a
 $CRLF = "\r\n"
-$BYTES_AT_A_TIME = 1 #(2 ^ 16) - 1
+#$BYTES_AT_A_TIME = (2 ^ 16) - 1
 
 $users = Array.new 
 $io_to_users = Hash.new
@@ -39,7 +39,8 @@ def write_websocket_handshake(io, accept_token)
   loop do
     ready_for_reading, ready_for_writing, errored = IO.select(nil, [io])
     ready_for_writing.each do |socket_to_write_to|
-      bytes_to_write = s.slice!(0, $BYTES_AT_A_TIME)
+      bytes_to_write = s.slice!(0, s.length) #s.slice!(0, $BYTES_AT_A_TIME)
+      #puts bytes_to_write.inspect
       bytes_written = socket_to_write_to.write(bytes_to_write)
     end
     break if s.length == 0 #NOTE: stop writing once we have delivered the entire header response
@@ -125,6 +126,7 @@ class Player
 
   attr_accessor :parser
   attr_accessor :bytes_available
+  attr_accessor :read_something
 
   def initialize(pid, socket)
     self.player_id = pid
@@ -143,6 +145,8 @@ class Player
     self.websocket_handshake = false
     self.parser = Yajl::Parser.new(:symbolize_keys => false)
     self.parser.on_parse_complete = self
+
+    self.read_something = Time.now.to_f
   end
 
   def to_io
@@ -183,19 +187,11 @@ class Player
   def perform_required_reading
     return if self.socket_io.closed?
 
-    buf = "" #Fixnum.new
+    buf = ""
     fionread = 0x541B
     ioctl_res = self.socket_io.ioctl(fionread, buf)
-    #puts buf.inspect
-    #things = buf.unpack("C*")
-    #puts ["yea?", self.socket_io.nread].inspect
     things = buf.unpack("l")
-    puts things.inspect
-    #puts ObjectSpace._id2ref(things[0])
-    #puts ["to_i", buf.to_i].inspect
     self.bytes_available = things[0]
-
-    #puts self.bytes_available
 
     unless self.got_blank_lines > 0
       if waiting_to_read_magic? then
@@ -209,7 +205,7 @@ class Player
         end
         self.input_buffer << partial_input
 
-        puts self.input_buffer.inspect
+        #puts self.input_buffer.inspect
 
         return self.input_buffer.length unless waiting_to_read_magic?
 
@@ -223,7 +219,7 @@ class Player
           if pos_of_end_line.nil?
             break
           else
-            line = input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
+            line = self.input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
             #puts line.inspect
             self.got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
             parts = line.split(":")
@@ -232,16 +228,15 @@ class Player
             else
               #NOTE: not a header, likely the "GET / ..." line, discarded
             end
+            #puts self.request_headers.inspect
           end
         end
       end
 
-      #puts self.request_headers.inspect
+#puts "wang"
 
       return [self.bytes_available, self.input_buffer.length] if self.got_blank_lines == 0 && waiting_to_read_magic?
     end
-
-    puts "wang"
 
     unless self.read_magic || self.websocket_handshake
       if key = request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
@@ -254,22 +249,34 @@ class Player
       end
     end
 
-
     #begin
-#      return if self.socket_io.eof?
+    #return if self.socket_io.eof?
 
-    puts "fu?"
-    puts self.inspect
+    #puts "fu?"
 
-      partial_input = self.socket_io.read_nonblock(self.bytes_available)
-      self.input_buffer << partial_input
-      #puts self.input_buffer.inspect
+    ioctl_res = self.socket_io.ioctl(fionread, buf)
+    things = buf.unpack("l")
+    self.bytes_available = things[0]
+
+    need_to_disconnect_nothing_to_read_native = (self.bytes_available == 0 && !self.websocket_framing)
+    need_to_disconnect_nothing_to_read_websocket = (self.bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.read_something) > 1.0))
+    need_to_skip_websocket = (self.bytes_available == 0 && self.websocket_framing && !self.read_magic)
+    #puts [need_to_disconnect_nothing_to_read_native, need_to_disconnect_nothing_to_read_websocket, need_to_skip_websocket].inspect
+    return if need_to_disconnect_nothing_to_read_native
+    return if need_to_disconnect_nothing_to_read_websocket
+    return 0 if need_to_skip_websocket
+
+    partial_input = self.socket_io.read(self.bytes_available)
+    self.input_buffer << partial_input
+
+    #puts self.input_buffer.inspect
     #rescue Errno::EWOULDBLOCK => e
     #  return
     #end
 
     if self.websocket_framing
       self.payload = self.extract_websocket_payload
+      #puts self.payload
       if self.payload == "{" && self.read_magic == false
         self.read_magic = true
       end
@@ -278,7 +285,7 @@ class Player
     end
 
     if self.payload
-      puts self.payload
+      #puts self.payload
       begin
         self.parser << self.payload.strip
       rescue Yajl::ParseError => e
@@ -296,7 +303,7 @@ class Player
   end
 
   def perform_required_writing(usrs)
-    return 0 unless self.read_magic
+    return 0 if (!self.websocket_framing && !self.read_magic) || (self.websocket_framing && !self.websocket_handshake)
     out_frame = ""
     if self.sent_open
       if self.sent_id
@@ -319,6 +326,7 @@ class Player
     end
 
     if out_frame.length > 0
+      #puts ["out", out_frame.inspect].inspect
       begin
         if self.websocket_framing
           send_frame(self.socket_io, $OPCODE_BINARY, out_frame)
@@ -382,6 +390,7 @@ class Player
       else
         paydirt = self.payload_raw
       end
+      self.read_something = Time.now.to_f if paydirt
       case self.opcode
         when $OPCODE_TEXT, $OPCODE_BINARY
         when $OPCODE_CLOSE
@@ -434,7 +443,7 @@ def main
           $users.delete(user)
         end if errored
 
-        sleep 0.1
+        #sleep 0.1
       end
     end
   end
