@@ -16,9 +16,6 @@ $OPCODE_CLOSE = 0x08
 $OPCODE_PING = 0x09
 $OPCODE_PONG = 0x0a
 $CRLF = "\r\n"
-#$BYTES_AT_A_TIME = (2 ^ 16) - 1
-
-$io_to_users = Hash.new
 
 def create_websocket_accept_token(key)
   sha1 = Digest::SHA1.new
@@ -203,23 +200,13 @@ class Player
           end
         end
         self.input_buffer << partial_input
-
-        #puts self.input_buffer.inspect
-
         return self.input_buffer.length unless waiting_to_read_magic?
-
-        #puts "fuck??"
-
         loop do
           pos_of_end_line = self.input_buffer.index($CRLF)
-
-          #puts pos_of_end_line.inspect
-
           if pos_of_end_line.nil?
             break
           else
             line = self.input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
-            #puts line.inspect
             self.got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
             parts = line.split(":")
             if parts.length == 2
@@ -227,13 +214,9 @@ class Player
             else
               #NOTE: not a header, likely the "GET / ..." line, discarded
             end
-            #puts self.request_headers.inspect
           end
         end
       end
-
-#puts "wang"
-
       return [self.bytes_available, self.input_buffer.length] if self.got_blank_lines == 0 && waiting_to_read_magic?
     end
 
@@ -247,11 +230,6 @@ class Player
         raise "not sure what this is, abort and close" unless self.read_magic
       end
     end
-
-    #begin
-    #return if self.socket_io.eof?
-
-    #puts "fu?"
 
     ioctl_res = self.socket_io.ioctl(fionread, buf)
     things = buf.unpack("l")
@@ -268,14 +246,8 @@ class Player
     partial_input = self.socket_io.read(self.bytes_available)
     self.input_buffer << partial_input
 
-    #puts self.input_buffer.inspect
-    #rescue Errno::EWOULDBLOCK => e
-    #  return
-    #end
-
     if self.websocket_framing
       self.payload = self.extract_websocket_payload
-      #puts self.payload
       if self.payload && self.payload.length > 0 && self.payload[0] == "{" && self.read_magic == false
         self.read_magic = true
       end
@@ -284,10 +256,10 @@ class Player
     end
 
     if self.payload
-      #puts self.payload
       begin
-        self.parser << self.payload #.strip
+        self.parser << self.payload
       rescue Yajl::ParseError => e
+        return
       end
       self.payload = nil
     end
@@ -437,7 +409,6 @@ def main
       end if ready_for_reading
 
       connections.each do |user|
-        #user.perform_required_writing(connections)
         bytes_written = user.perform_required_writing(connections)
         if (bytes_written.nil?)
           puts ["quit on write", user.player_id, bytes_written].inspect
