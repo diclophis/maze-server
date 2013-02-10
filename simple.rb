@@ -183,17 +183,25 @@ class Player
   def perform_required_reading
     return if self.socket_io.closed?
 
-    buf = ''
-    fionread = 0x541B 
+    buf = "" #Fixnum.new
+    fionread = 0x541B
     ioctl_res = self.socket_io.ioctl(fionread, buf)
-    things = buf.unpack("C")
-    self.bytes_available = [things[0], 0].max
+    #puts buf.inspect
+    #things = buf.unpack("C*")
+    #puts ["yea?", self.socket_io.nread].inspect
+    things = buf.unpack("l")
+    puts things.inspect
+    #puts ObjectSpace._id2ref(things[0])
+    #puts ["to_i", buf.to_i].inspect
+    self.bytes_available = things[0]
+
+    #puts self.bytes_available
 
     unless self.got_blank_lines > 0
       if waiting_to_read_magic? then
         return if self.socket_io.eof?
 
-        partial_input = self.socket_io.read_nonblock(self.bytes_available)
+        partial_input = self.socket_io.read(self.bytes_available)
         if partial_input.length > 0
           if partial_input[0] == "{"
             self.read_magic = true
@@ -201,27 +209,44 @@ class Player
         end
         self.input_buffer << partial_input
 
+        puts self.input_buffer.inspect
+
         return self.input_buffer.length unless waiting_to_read_magic?
-        pos_of_end_line = self.input_buffer.index($CRLF)
-        unless pos_of_end_line.nil?
-          line = input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
-          self.got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
-          parts = line.split(":")
-          if parts.length == 2
-            self.request_headers[parts[0]] = parts[1].strip
+
+        #puts "fuck??"
+
+        loop do
+          pos_of_end_line = self.input_buffer.index($CRLF)
+
+          #puts pos_of_end_line.inspect
+
+          if pos_of_end_line.nil?
+            break
           else
-            #NOTE: not a header, likely the "GET / ..." line, discarded
+            line = input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
+            #puts line.inspect
+            self.got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
+            parts = line.split(":")
+            if parts.length == 2
+              self.request_headers[parts[0]] = parts[1].strip
+            else
+              #NOTE: not a header, likely the "GET / ..." line, discarded
+            end
           end
         end
       end
 
+      #puts self.request_headers.inspect
+
       return [self.bytes_available, self.input_buffer.length] if self.got_blank_lines == 0 && waiting_to_read_magic?
     end
+
+    puts "wang"
 
     unless self.read_magic || self.websocket_handshake
       if key = request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
         raise "only binary websockets are supported" unless request_headers["Sec-WebSocket-Protocol"] == "binary"
-        write_websocket_handshake(sock, create_websocket_accept_token(key))
+        write_websocket_handshake(self.socket_io, create_websocket_accept_token(key))
         self.websocket_framing = true
         self.websocket_handshake = true
       else
@@ -229,24 +254,31 @@ class Player
       end
     end
 
-    begin
-      return if self.socket_io.eof?
+
+    #begin
+#      return if self.socket_io.eof?
+
+    puts "fu?"
+    puts self.inspect
+
       partial_input = self.socket_io.read_nonblock(self.bytes_available)
       self.input_buffer << partial_input
-    rescue Errno::EWOULDBLOCK => e
-      return
-    end
+      #puts self.input_buffer.inspect
+    #rescue Errno::EWOULDBLOCK => e
+    #  return
+    #end
 
     if self.websocket_framing
       self.payload = self.extract_websocket_payload
       if self.payload == "{" && self.read_magic == false
-        self.read_magic true
+        self.read_magic = true
       end
     else
       self.payload = self.extract_native_payload
     end
 
     if self.payload
+      puts self.payload
       begin
         self.parser << self.payload.strip
       rescue Yajl::ParseError => e
@@ -401,6 +433,8 @@ def main
           puts ["quit on errored", user.player_id].inspect
           $users.delete(user)
         end if errored
+
+        sleep 0.1
       end
     end
   end
