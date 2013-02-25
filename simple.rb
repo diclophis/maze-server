@@ -236,7 +236,7 @@ class Player
     need_to_disconnect_nothing_to_read_native = (self.bytes_available == 0 && !self.websocket_framing)
     need_to_disconnect_nothing_to_read_websocket = (self.bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.read_something) > 1.0))
     need_to_skip_websocket = (self.bytes_available == 0 && self.websocket_framing && !self.read_magic)
-    #puts [need_to_disconnect_nothing_to_read_native, need_to_disconnect_nothing_to_read_websocket, need_to_skip_websocket].inspect
+
     return if need_to_disconnect_nothing_to_read_native
     return if need_to_disconnect_nothing_to_read_websocket
     return 0 if need_to_skip_websocket
@@ -279,7 +279,6 @@ class Player
         usrs.each do |usr|
           unless usr == self
             if self.user_updates[usr].nil? || usr.update > self.user_updates[usr] then
-              #puts "need to tell #{self} about #{usr}"
               self.user_updates[usr] = usr.update
               out_frame += "[\"update_player\",\n#{usr.player_id},#{usr.px},#{usr.py},#{usr.tx},#{usr.ty}]," if usr.registered
             end
@@ -381,20 +380,17 @@ def main
   connections = Array.new 
   server = TCPServer.new(7002)
   uid = 0
-
-  Thread::abort_on_exception = true
-
   loop do
     begin
       ready_for_reading, ready_for_writing, errored = IO.select([server] + connections, nil, connections, $SELECT_TIMEOUT)
       #puts ["IO.select", (ready_for_reading.length if ready_for_reading), (ready_for_writing.length if ready_for_writing), (errored.length if errored)].inspect
 
       if ready_for_reading && ready_for_reading.index(server) != nil then
-        puts "accept"
         socket_io = server.accept_nonblock
         uid += 1
         me = Player.new(uid, socket_io)
         connections << me
+        puts ["accept", uid].inspect
         ready_for_reading.delete(server)
       end
 
@@ -410,13 +406,13 @@ def main
         bytes_written = user.perform_required_writing(connections)
         if (bytes_written.nil?)
           puts ["quit on write", user.player_id, bytes_written].inspect
-          users.delete(user)
+          connections.delete(user)
         end
       end
 
       errored.each do |user|
         puts ["quit on errored", user.player_id].inspect
-        users.delete(user)
+        connections.delete(user)
       end if errored
     end
   end
@@ -434,3 +430,27 @@ main
 # https://developer.mozilla.org/en-US/docs/WebSockets/Writing_WebSocket_client_applications
 # https://github.com/igrigorik/em-websocket/blob/master/lib/em-websocket/handshake04.rb
 # https://github.com/brianmario/yajl-ruby
+# http://ruby-doc.org/core-1.9.3/Array.html#method-i-index
+# http://jsonlint.com/
+# http://stackoverflow.com/questions/8264732/can-i-or-should-i-find-an-object-by-the-object-id-attribute-in-ruby
+# http://www.sarahmei.com/blog/2009/04/21/object-ids-and-fixnums/
+# http://www.eqqon.com/index.php/Ruby_C_Extension_API_Documentation_%28Ruby_1.8%29
+# http://www.ruby-forum.com/topic/200977
+# http://www.ruby-doc.org/core-1.9.3/String.html#unpack
+# http://www.opensource.apple.com/source/ruby/ruby-4/ruby/ruby.h
+# http://www.opensource.apple.com/source/ruby/ruby-11/ruby/io.c
+# http://www.ruby-doc.org/core-1.9.3/Integer.html#method-i-to_int
+# http://blog.jacius.info/ruby-c-extension-cheat-sheet/
+# http://www.ruby-forum.com/topic/4262853
+# http://chris.sagedy.com/?p=11
+# http://stackoverflow.com/questions/11949538/pointers-to-buffer-in-ioctl-call
+# http://bit-struct.rubyforge.org/
+# http://www.ruby-forum.com/topic/157042
+# http://ubuntuforums.org/showthread.php?t=368348
+# http://www.ruby-forum.com/topic/159213
+# http://www.kernel.org/doc/man-pages/online/pages/man2/ioctl.2.html
+# http://stackoverflow.com/questions/2274428/how-to-determine-how-many-bytes-an-integer-needs
+# https://github.com/runpaint/read-ruby/blob/master/examples/io-ioctl.rb
+# http://rxr.whitequark.org/mri/source/test/ruby/test_io.rb
+# http://stackoverflow.com/questions/930989/is-there-a-simple-method-for-checking-whether-a-ruby-io-instance-will-block-on-r?rq=1
+# http://ruby-doc.org/stdlib-1.9.1/libdoc/io/wait/rdoc/IO.html
