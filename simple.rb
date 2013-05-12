@@ -16,6 +16,7 @@ $OPCODE_CLOSE = 0x08
 $OPCODE_PING = 0x09
 $OPCODE_PONG = 0x0a
 $CRLF = "\r\n"
+$READ_SOMETHING_TIMEOUT = 0.5
 
 class Player
   attr_accessor :player_id
@@ -25,6 +26,7 @@ class Player
   attr_accessor :ty
   attr_accessor :registered
   attr_accessor :update
+
   attr_accessor :request_headers
   attr_accessor :socket_io
   attr_accessor :read_magic
@@ -51,7 +53,7 @@ class Player
   attr_accessor :bytes_available
   attr_accessor :read_something
 
-  attr_accessor :get
+  attr_accessor :websocket_get
 
   def initialize(pid, socket)
     self.player_id = pid
@@ -188,7 +190,7 @@ class Player
               self.request_headers[parts[0]] = parts[1].strip
             else
               #NOTE: not a header, likely the "GET / ..." line, discarded
-              self.get = line
+              self.websocket_get = line
             end
           end
         end
@@ -212,7 +214,7 @@ class Player
     self.bytes_available = things[0]
 
     need_to_disconnect_nothing_to_read_native = (self.bytes_available == 0 && !self.websocket_framing)
-    need_to_disconnect_nothing_to_read_websocket = (self.bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.read_something) > 1.0))
+    need_to_disconnect_nothing_to_read_websocket = (self.bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.read_something) > $READ_SOMETHING_TIMEOUT))
     need_to_skip_websocket = (self.bytes_available == 0 && self.websocket_framing && !self.read_magic)
 
     return if need_to_disconnect_nothing_to_read_native
