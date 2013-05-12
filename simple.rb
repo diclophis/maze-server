@@ -20,6 +20,8 @@ $WEBSOCKET_CRLF = "\r\n"
 $WEBSOCKET_READ_SOMETHING_GRACE_TIMEOUT = 1.0 #NOTE: this is a grace period for some slowness in websocket init in emscripten/javascript
 
 class Player
+
+  # Player attributes and other player data
   attr_accessor :player_id
   attr_accessor :px
   attr_accessor :py
@@ -27,19 +29,21 @@ class Player
   attr_accessor :ty
   attr_accessor :registered
   attr_accessor :update
+  attr_accessor :user_updates
 
+  # Networking generic
   attr_accessor :socket_io
   attr_accessor :read_magic
   attr_accessor :input_buffer
   attr_accessor :payload
   attr_accessor :payload_raw
 
+  # JSON stream protocol
   attr_accessor :state_sent_open
   attr_accessor :state_sent_id
   attr_accessor :json_sax_parser
 
-  attr_accessor :user_updates
-
+  # WebSocket framing
   attr_accessor :websocket_request_headers
   attr_accessor :websocket_got_blank_lines
   attr_accessor :websocket_framing_state
@@ -54,22 +58,33 @@ class Player
 
   def initialize(pid, socket)
     self.player_id = pid
+    self.px = self.py = self.tx = self.ty = 0
     self.registered = false
     self.update = 0
+    self.user_updates = Hash.new
+
     self.socket_io = socket
     self.read_magic = false
     self.input_buffer = String.new
+    self.payload = nil
+    self.payload_raw = nil
 
-    self.user_updates = Hash.new
-
+    self.state_sent_open = false
+    self.state_sent_id = false
     self.json_sax_parser = Yajl::Parser.new(:symbolize_keys => false)
     self.json_sax_parser.on_parse_complete = self
 
     self.websocket_request_headers = Hash.new
     self.websocket_got_blank_lines = 0
     self.websocket_framing_state = :read_frame_type
+    self.websocket_fin = nil
+    self.websocket_opcode = nil
+    self.websocket_plength = nil
+    self.websocket_mask = nil
+    self.websocket_mask_key = nil
     self.websocket_wrote_handshake = false
     self.websocket_read_something = Time.now.to_f
+    self.websocket_get = nil
   end
 
   def to_io
@@ -139,12 +154,18 @@ class Player
 
     unless self.read_magic || self.websocket_wrote_handshake
       if key = self.websocket_request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
-        raise "only binary websockets are supported" unless self.websocket_request_headers["Sec-WebSocket-Protocol"] == "binary"
-        write_websocket_handshake(self.socket_io, create_websocket_accept_token(key))
-        #self.websocket_framing = true
-        self.websocket_wrote_handshake = true
+        if self.websocket_request_headers["Sec-WebSocket-Protocol"] == "binary"
+          write_websocket_handshake(self.socket_io, create_websocket_accept_token(key))
+          self.websocket_wrote_handshake = true
+        else
+          puts "only binary websockets are supported" 
+          return
+        end
       else
-        raise "not sure what this is, abort and close" unless self.read_magic
+        unless self.read_magic
+          puts "not sure what this is, abort and close"
+          return
+        end
       end
     end
 
@@ -286,7 +307,7 @@ class Player
     paydirt = nil
     if self.websocket_framing_state == :read_frame_type && self.input_buffer.length >= 1
       byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
-      #self.websocket_fin = (byte & 0x80) != 0
+      self.websocket_fin = (byte & 0x80) != 0
       self.websocket_opcode = byte & 0x0f
       self.websocket_framing_state = :read_frame_length
     elsif self.websocket_framing_state == :read_frame_length && self.input_buffer.length >= 1
