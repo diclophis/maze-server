@@ -205,8 +205,9 @@ class Player
         self.json_sax_parser << self.payload
       rescue Yajl::ParseError => e
         return
+      ensure
+        self.payload = nil
       end
-      self.payload = nil
     end
 
     [bytes_available, self.input_buffer.length]
