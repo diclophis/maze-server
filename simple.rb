@@ -49,8 +49,7 @@ class Player
   attr_accessor :user_updates
   attr_accessor :websocket_handshake
 
-  attr_accessor :parser
-  #attr_accessor :bytes_available
+  attr_accessor :json_sax_parser
 
   attr_accessor :websocket_read_something
   attr_accessor :websocket_get
@@ -67,12 +66,12 @@ class Player
     self.websocket_framing = false
 
     self.user_updates = Hash.new
+
+    self.json_sax_parser = Yajl::Parser.new(:symbolize_keys => false)
+    self.json_sax_parser.on_parse_complete = self
+
     self.websocket_framing_state = :read_frame_type
-
     self.websocket_handshake = false
-    self.parser = Yajl::Parser.new(:symbolize_keys => false)
-    self.parser.on_parse_complete = self
-
     self.websocket_read_something = Time.now.to_f
   end
 
@@ -235,7 +234,7 @@ class Player
 
     if self.payload
       begin
-        self.parser << self.payload
+        self.json_sax_parser << self.payload
       rescue Yajl::ParseError => e
         return
       end
