@@ -27,7 +27,6 @@ class Player
   attr_accessor :registered
   attr_accessor :update
 
-  attr_accessor :request_headers
   attr_accessor :socket_io
   attr_accessor :read_magic
   attr_accessor :input_buffer
@@ -44,6 +43,7 @@ class Player
 
   attr_accessor :json_sax_parser
 
+  attr_accessor :websocket_request_headers
   attr_accessor :websocket_got_blank_lines
   attr_accessor :websocket_framing_state
   attr_accessor :websocket_fin
@@ -59,18 +59,18 @@ class Player
     self.player_id = pid
     self.registered = false
     self.update = 0
-    self.request_headers = Hash.new
     self.socket_io = socket
     self.read_magic = false
     self.input_buffer = String.new
-    self.websocket_got_blank_lines = 0
-    self.websocket_framing = false
 
     self.user_updates = Hash.new
 
     self.json_sax_parser = Yajl::Parser.new(:symbolize_keys => false)
     self.json_sax_parser.on_parse_complete = self
 
+    self.websocket_request_headers = Hash.new
+    self.websocket_got_blank_lines = 0
+    self.websocket_framing = false
     self.websocket_framing_state = :read_frame_type
     self.websocket_wrote_handshake = false
     self.websocket_read_something = Time.now.to_f
@@ -187,7 +187,7 @@ class Player
             self.websocket_got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
             parts = line.split(":")
             if parts.length == 2
-              self.request_headers[parts[0]] = parts[1].strip
+              self.websocket_request_headers[parts[0]] = parts[1].strip
             else
               #NOTE: not a header, likely the "GET / ..." line, discarded
               self.websocket_get = line
@@ -199,8 +199,8 @@ class Player
     end
 
     unless self.read_magic || self.websocket_wrote_handshake
-      if key = request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
-        raise "only binary websockets are supported" unless request_headers["Sec-WebSocket-Protocol"] == "binary"
+      if key = self.websocket_request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
+        raise "only binary websockets are supported" unless self.websocket_request_headers["Sec-WebSocket-Protocol"] == "binary"
         write_websocket_handshake(self.socket_io, create_websocket_accept_token(key))
         self.websocket_framing = true
         self.websocket_wrote_handshake = true
