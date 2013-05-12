@@ -43,8 +43,9 @@ class Player
 
   attr_accessor :payload
   attr_accessor :payload_raw
-  attr_accessor :sent_open
-  attr_accessor :sent_id
+
+  attr_accessor :state_sent_open
+  attr_accessor :state_sent_id
 
   attr_accessor :user_updates
 
@@ -253,8 +254,8 @@ class Player
   def perform_required_writing(usrs)
     return 0 if (!self.websocket_framing && !self.read_magic) || (self.websocket_framing && !self.websocket_wrote_handshake)
     out_frame = ""
-    if self.sent_open
-      if self.sent_id
+    if self.state_sent_open
+      if self.state_sent_id
         usrs.each do |usr|
           unless usr == self
             if self.user_updates[usr].nil? || usr.update > self.user_updates[usr] then
@@ -264,11 +265,11 @@ class Player
           end
         end
       else
-        self.sent_id = true
+        self.state_sent_id = true
         out_frame = "[\"request_registration\",\n#{self.player_id}],"
       end
     else
-      self.sent_open = true
+      self.state_sent_open = true
       out_frame = "{\"stream\":["
     end
 
