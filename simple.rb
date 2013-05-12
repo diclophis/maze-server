@@ -101,63 +101,6 @@ class Player
     self.read_magic == false
   end
 
-  def websocket_write_byte(buffer, byte)
-    buffer.write([byte].pack("C"))
-  end
-
-  def websocket_apply_mask(payload, mask_key)
-    orig_bytes = payload.unpack("C*")
-    new_bytes = []
-    orig_bytes.each_with_index() do |b, i|
-      new_bytes.push(b ^ mask_key[i % 4])
-    end
-    return new_bytes.pack("C*")
-  end
-
-  def websocket_send_frame(io, opcode, payload)
-    buffer = StringIO.new
-    byte1 = opcode | 0b10000000
-    websocket_write_byte(io, byte1)
-    masked_byte = 0x00
-    if payload.bytesize <= 125
-      websocket_write_byte(buffer, masked_byte | payload.bytesize)
-    elsif payload.bytesize < 2 ** 16
-      websocket_write_byte(buffer, masked_byte | 126)
-      buffer.write([payload.bytesize].pack("n"))
-    else
-      websocket_write_byte(buffer, masked_byte | 127)
-      buffer.write([payload.bytesize / (2 ** 32), payload.bytesize % (2 ** 32)].pack("NN"))
-    end
-
-    buffer.write(payload)
-    io.write(buffer.string)
-  end
-
-  def create_websocket_accept_token(key)
-    sha1 = Digest::SHA1.new
-    message = key + $WEB_SOCKET_MAGIC
-    digested = sha1.digest message
-    Base64.encode64(digested).strip
-  end
-
-  def write_websocket_handshake(io, accept_token)
-    s = String.new
-    s << "HTTP/1.1 101 Switching Protocols" + $CRLF
-    s << "Upgrade: websocket" + $CRLF
-    s << "Connection: Upgrade" + $CRLF
-    s << "Sec-WebSocket-Accept: " + accept_token + $CRLF
-    s << "Sec-WebSocket-Protocol: binary" + $CRLF 
-    s << $CRLF 
-    loop do
-      ready_for_reading, ready_for_writing, errored = IO.select(nil, [io])
-      ready_for_writing.each do |socket_to_write_to|
-        bytes_to_write = s.slice!(0, s.length)
-        bytes_written = socket_to_write_to.write(bytes_to_write)
-      end
-      break if s.length == 0 #NOTE: stop writing once we have delivered the entire header response
-    end
-  end
-
   def perform_required_reading
     return if self.socket_io.closed?
 
@@ -245,16 +188,6 @@ class Player
     [bytes_available, self.input_buffer.length]
   end
 
-  def native_extract_payload
-    if self.input_buffer.length > 0
-      self.input_buffer.slice!(0, self.input_buffer.length)
-    end
-  end
-
-  def native_send_frame(frame)
-    self.socket_io.write(frame)
-  end
-
   def perform_required_writing(usrs)
     return 0 if (!self.websocket_framing && !self.read_magic) || (self.websocket_framing && !self.websocket_wrote_handshake)
     out_frame = ""
@@ -290,6 +223,63 @@ class Player
     end
 
     return out_frame.length
+  end
+
+  def websocket_write_byte(buffer, byte)
+    buffer.write([byte].pack("C"))
+  end
+
+  def websocket_apply_mask(payload, mask_key)
+    orig_bytes = payload.unpack("C*")
+    new_bytes = []
+    orig_bytes.each_with_index() do |b, i|
+      new_bytes.push(b ^ mask_key[i % 4])
+    end
+    return new_bytes.pack("C*")
+  end
+
+  def websocket_send_frame(io, opcode, payload)
+    buffer = StringIO.new
+    byte1 = opcode | 0b10000000
+    websocket_write_byte(io, byte1)
+    masked_byte = 0x00
+    if payload.bytesize <= 125
+      websocket_write_byte(buffer, masked_byte | payload.bytesize)
+    elsif payload.bytesize < 2 ** 16
+      websocket_write_byte(buffer, masked_byte | 126)
+      buffer.write([payload.bytesize].pack("n"))
+    else
+      websocket_write_byte(buffer, masked_byte | 127)
+      buffer.write([payload.bytesize / (2 ** 32), payload.bytesize % (2 ** 32)].pack("NN"))
+    end
+
+    buffer.write(payload)
+    io.write(buffer.string)
+  end
+
+  def create_websocket_accept_token(key)
+    sha1 = Digest::SHA1.new
+    message = key + $WEB_SOCKET_MAGIC
+    digested = sha1.digest message
+    Base64.encode64(digested).strip
+  end
+
+  def write_websocket_handshake(io, accept_token)
+    s = String.new
+    s << "HTTP/1.1 101 Switching Protocols" + $CRLF
+    s << "Upgrade: websocket" + $CRLF
+    s << "Connection: Upgrade" + $CRLF
+    s << "Sec-WebSocket-Accept: " + accept_token + $CRLF
+    s << "Sec-WebSocket-Protocol: binary" + $CRLF 
+    s << $CRLF 
+    loop do
+      ready_for_reading, ready_for_writing, errored = IO.select(nil, [io])
+      ready_for_writing.each do |socket_to_write_to|
+        bytes_to_write = s.slice!(0, s.length)
+        bytes_written = socket_to_write_to.write(bytes_to_write)
+      end
+      break if s.length == 0 #NOTE: stop writing once we have delivered the entire header response
+    end
   end
 
   def websocket_extract_payload
@@ -358,6 +348,16 @@ class Player
     end
 
     paydirt
+  end
+
+  def native_extract_payload
+    if self.input_buffer.length > 0
+      self.input_buffer.slice!(0, self.input_buffer.length)
+    end
+  end
+
+  def native_send_frame(frame)
+    self.socket_io.write(frame)
   end
 end
 
