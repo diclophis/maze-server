@@ -1,3 +1,40 @@
 # Running
 
         bundle exec ruby simple.rb
+
+# Research
+
+# https://github.com/gimite/web-socket-ruby/blob/master/lib/web_socket.rb
+# http://bogomips.org/sunshowers.git/tree/lib/sunshowers/io.rb?id=000a0fbb6fd04ed2cf75aba4117df6755d71f895
+# http://rainbows.rubyforge.org/sunshowers/Sunshowers/IO.html
+# https://github.com/gimite/web-socket-ruby/blob/master/lib/web_socket.rb
+# http://www.whatwg.org/specs/web-socket-protocol/
+# http://www.altdevblogaday.com/2012/01/23/writing-your-own-websocket-server/
+# http://www.htmlgoodies.com/html5/tutorials/making-html5-websockets-work.html
+# https://developer.mozilla.org/en-US/docs/WebSockets/Writing_WebSocket_client_applications
+# https://github.com/igrigorik/em-websocket/blob/master/lib/em-websocket/handshake04.rb
+# https://github.com/brianmario/yajl-ruby
+# http://ruby-doc.org/core-1.9.3/Array.html#method-i-index
+# http://jsonlint.com/
+# http://stackoverflow.com/questions/8264732/can-i-or-should-i-find-an-object-by-the-object-id-attribute-in-ruby
+# http://www.sarahmei.com/blog/2009/04/21/object-ids-and-fixnums/
+# http://www.eqqon.com/index.php/Ruby_C_Extension_API_Documentation_%28Ruby_1.8%29
+# http://www.ruby-forum.com/topic/200977
+# http://www.ruby-doc.org/core-1.9.3/String.html#unpack
+# http://www.opensource.apple.com/source/ruby/ruby-4/ruby/ruby.h
+# http://www.opensource.apple.com/source/ruby/ruby-11/ruby/io.c
+# http://www.ruby-doc.org/core-1.9.3/Integer.html#method-i-to_int
+# http://blog.jacius.info/ruby-c-extension-cheat-sheet/
+# http://www.ruby-forum.com/topic/4262853
+# http://chris.sagedy.com/?p=11
+# http://stackoverflow.com/questions/11949538/pointers-to-buffer-in-ioctl-call
+# http://bit-struct.rubyforge.org/
+# http://www.ruby-forum.com/topic/157042
+# http://ubuntuforums.org/showthread.php?t=368348
+# http://www.ruby-forum.com/topic/159213
+# http://www.kernel.org/doc/man-pages/online/pages/man2/ioctl.2.html
+# http://stackoverflow.com/questions/2274428/how-to-determine-how-many-bytes-an-integer-needs
+# https://github.com/runpaint/read-ruby/blob/master/examples/io-ioctl.rb
+# http://rxr.whitequark.org/mri/source/test/ruby/test_io.rb
+# http://stackoverflow.com/questions/930989/is-there-a-simple-method-for-checking-whether-a-ruby-io-instance-will-block-on-r?rq=1
+# http://ruby-doc.org/stdlib-1.9.1/libdoc/io/wait/rdoc/IO.html
