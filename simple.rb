@@ -37,7 +37,6 @@ class Player
   attr_accessor :websocket_framing_state
   attr_accessor :fin
   attr_accessor :opcode
-  attr_accessor :plength
 
   attr_accessor :payload
   attr_accessor :payload_raw
@@ -49,6 +48,7 @@ class Player
 
   attr_accessor :json_sax_parser
 
+  attr_accessor :websocket_plength
   attr_accessor :websocket_mask
   attr_accessor :websocket_mask_key 
   attr_accessor :websocket_wrote_handshake
@@ -298,10 +298,10 @@ class Player
     elsif self.websocket_framing_state == :read_frame_length && self.input_buffer.length >= 1
       byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
       self.websocket_mask = (byte & 0x80) != 0
-      self.plength = byte & 0x7f
-      if self.plength == 126
+      self.websocket_plength = byte & 0x7f
+      if self.websocket_plength == 126
         self.websocket_framing_state = :read_frame_length_126
-      elsif plength == 127
+      elsif self.websocket_plength == 127
         self.websocket_framing_state = :read_frame_length_127
       else
         if self.websocket_mask
@@ -312,7 +312,7 @@ class Player
       end
     elsif self.websocket_framing_state == :read_frame_length_126 && self.input_buffer.length >= 2
       bytes_packed = self.input_buffer.slice!(0, 2)
-      self.plength = bytes_packed.unpack("n")[0]
+      self.websocket_plength = bytes_packed.unpack("n")[0]
       if self.websocket_mask
         self.websocket_framing_state = :read_frame_mask
       else
@@ -321,7 +321,7 @@ class Player
     elsif self.websocket_framing_state == :read_frame_length_127 && self.input_buffer.length >= 8
       bytes_packed = self.input_buffer.slice!(0, 8)
       (high, low) = bytes_unpacked.unpack("NN")
-      self.plength = high * (2 ** 32) + low
+      self.websocket_plength = high * (2 ** 32) + low
       if self.websocket_mask
         self.websocket_framing_state = :read_frame_mask
       else
@@ -330,8 +330,8 @@ class Player
     elsif self.websocket_framing_state == :read_frame_mask && self.input_buffer.length >= 4
       self.websocket_mask_key = self.input_buffer.slice!(0, 4).unpack("C*")
       self.websocket_framing_state = :read_frame_payload
-    elsif self.websocket_framing_state == :read_frame_payload && self.input_buffer.length >= self.plength
-      self.payload_raw = self.input_buffer.slice!(0, self.plength)
+    elsif self.websocket_framing_state == :read_frame_payload && self.input_buffer.length >= self.websocket_plength
+      self.payload_raw = self.input_buffer.slice!(0, self.websocket_plength)
       if self.websocket_mask
         paydirt = websocket_apply_mask(self.payload_raw, self.websocket_mask_key)
       else
