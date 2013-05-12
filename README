@@ -1,6 +1,14 @@
+# Installing
+
+        bundle install
+
 # Running
 
         bundle exec ruby simple.rb
+
+# Testing
+
+        bundle exec rspec
 
 # Research
 
