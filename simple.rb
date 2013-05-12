@@ -225,12 +225,12 @@ class Player
     self.input_buffer << partial_input
 
     if self.websocket_framing
-      self.payload = self.extract_websocket_payload
+      self.payload = self.websocket_extract_payload
       if self.payload && self.payload.length > 0 && self.payload[0] == "{" && self.read_magic == false
         self.read_magic = true
       end
     else
-      self.payload = self.extract_native_payload
+      self.payload = self.native_extract_payload
     end
 
     if self.payload
@@ -245,10 +245,14 @@ class Player
     [bytes_available, self.input_buffer.length]
   end
 
-  def extract_native_payload
+  def native_extract_payload
     if self.input_buffer.length > 0
       self.input_buffer.slice!(0, self.input_buffer.length)
     end
+  end
+
+  def native_send_frame(frame)
+    self.socket_io.write(frame)
   end
 
   def perform_required_writing(usrs)
@@ -278,7 +282,7 @@ class Player
         if self.websocket_framing
           websocket_send_frame(self.socket_io, $OPCODE_BINARY, out_frame)
         else
-          self.socket_io.write(out_frame)
+          native_send_frame(out_frame)
         end
       rescue Errno::ECONNRESET, Errno::EPIPE => e
         return
@@ -288,7 +292,7 @@ class Player
     return out_frame.length
   end
 
-  def extract_websocket_payload
+  def websocket_extract_payload
     paydirt = nil
     if self.websocket_framing_state == :read_frame_type && self.input_buffer.length >= 1
       byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
