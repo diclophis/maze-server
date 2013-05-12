@@ -94,7 +94,7 @@ class Player
         self.py = obj["update_player"][1]
         self.tx = obj["update_player"][2]
         self.ty = obj["update_player"][3]
-        puts "#{self.player_id} is going to #{self.px},#{self.py} => #{self.tx},#{self.ty}"
+        #puts "#{self.player_id} is going to #{self.px},#{self.py} => #{self.tx},#{self.ty}"
       end
     end
   end
