@@ -39,7 +39,6 @@ class Player
   attr_accessor :opcode
   attr_accessor :plength
   attr_accessor :mask
-  attr_accessor :mask_key 
 
   attr_accessor :payload
   attr_accessor :payload_raw
@@ -51,6 +50,7 @@ class Player
 
   attr_accessor :json_sax_parser
 
+  attr_accessor :websocket_mask_key 
   attr_accessor :websocket_wrote_handshake
   attr_accessor :websocket_read_something
   attr_accessor :websocket_get
@@ -105,7 +105,7 @@ class Player
     buffer.write([byte].pack("C"))
   end
 
-  def apply_mask(payload, mask_key)
+  def websocket_apply_mask(payload, mask_key)
     orig_bytes = payload.unpack("C*")
     new_bytes = []
     orig_bytes.each_with_index() do |b, i|
@@ -328,12 +328,12 @@ class Player
         self.websocket_framing_state = :read_frame_payload
       end
     elsif self.websocket_framing_state == :read_frame_mask && self.input_buffer.length >= 4
-      self.mask_key = self.input_buffer.slice!(0, 4).unpack("C*")
+      self.websocket_mask_key = self.input_buffer.slice!(0, 4).unpack("C*")
       self.websocket_framing_state = :read_frame_payload
     elsif self.websocket_framing_state == :read_frame_payload && self.input_buffer.length >= self.plength
       self.payload_raw = self.input_buffer.slice!(0, self.plength)
       if self.mask
-        paydirt = apply_mask(self.payload_raw, self.mask_key)
+        paydirt = websocket_apply_mask(self.payload_raw, self.websocket_mask_key)
       else
         paydirt = self.payload_raw
       end
