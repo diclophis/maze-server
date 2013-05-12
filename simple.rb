@@ -42,17 +42,17 @@ def write_websocket_handshake(io, accept_token)
   end
 end
 
-def force_encoding(str, encoding)
-  if str.respond_to?(:force_encoding)
-    return str.force_encoding(encoding)
-  else
-    return str
-  end
-end
+#def force_encoding(str, encoding)
+#  if str.respond_to?(:force_encoding)
+#    return str.force_encoding(encoding)
+#  else
+#    return str
+#  end
+#end
 
-def binary(buf)
-  buf.encoding == Encoding::BINARY ? buf : buf.dup.force_encoding(Encoding::BINARY)
-end
+#def binary(buf)
+#  buf.encoding == Encoding::BINARY ? buf : buf.dup.force_encoding(Encoding::BINARY)
+#end
 
 def write_byte(buffer, byte)
   buffer.write([byte].pack("C"))
