@@ -47,10 +47,10 @@ class Player
   attr_accessor :sent_id
 
   attr_accessor :user_updates
-  attr_accessor :websocket_handshake
 
   attr_accessor :json_sax_parser
 
+  attr_accessor :websocket_wrote_handshake
   attr_accessor :websocket_read_something
   attr_accessor :websocket_get
 
@@ -71,7 +71,7 @@ class Player
     self.json_sax_parser.on_parse_complete = self
 
     self.websocket_framing_state = :read_frame_type
-    self.websocket_handshake = false
+    self.websocket_wrote_handshake = false
     self.websocket_read_something = Time.now.to_f
   end
 
@@ -197,12 +197,12 @@ class Player
       return [bytes_available, self.input_buffer.length] if self.got_blank_lines == 0 && waiting_to_read_magic?
     end
 
-    unless self.read_magic || self.websocket_handshake
+    unless self.read_magic || self.websocket_wrote_handshake
       if key = request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
         raise "only binary websockets are supported" unless request_headers["Sec-WebSocket-Protocol"] == "binary"
         write_websocket_handshake(self.socket_io, create_websocket_accept_token(key))
         self.websocket_framing = true
-        self.websocket_handshake = true
+        self.websocket_wrote_handshake = true
       else
         raise "not sure what this is, abort and close" unless self.read_magic
       end
@@ -251,7 +251,7 @@ class Player
   end
 
   def perform_required_writing(usrs)
-    return 0 if (!self.websocket_framing && !self.read_magic) || (self.websocket_framing && !self.websocket_handshake)
+    return 0 if (!self.websocket_framing && !self.read_magic) || (self.websocket_framing && !self.websocket_wrote_handshake)
     out_frame = ""
     if self.sent_open
       if self.sent_id
