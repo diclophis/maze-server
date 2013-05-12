@@ -30,13 +30,9 @@ class Player
   attr_accessor :request_headers
   attr_accessor :socket_io
   attr_accessor :read_magic
-  attr_accessor :got_blank_lines
   attr_accessor :input_buffer
-  attr_accessor :websocket_framing
 
-  attr_accessor :websocket_framing_state
-  attr_accessor :fin
-  attr_accessor :opcode
+  attr_accessor :websocket_framing
 
   attr_accessor :payload
   attr_accessor :payload_raw
@@ -48,6 +44,10 @@ class Player
 
   attr_accessor :json_sax_parser
 
+  attr_accessor :websocket_got_blank_lines
+  attr_accessor :websocket_framing_state
+  attr_accessor :websocket_fin
+  attr_accessor :websocket_opcode
   attr_accessor :websocket_plength
   attr_accessor :websocket_mask
   attr_accessor :websocket_mask_key 
@@ -63,7 +63,7 @@ class Player
     self.socket_io = socket
     self.read_magic = false
     self.input_buffer = String.new
-    self.got_blank_lines = 0
+    self.websocket_got_blank_lines = 0
     self.websocket_framing = false
 
     self.user_updates = Hash.new
@@ -167,7 +167,7 @@ class Player
     things = buf.unpack("l")
     bytes_available = things[0]
 
-    unless self.got_blank_lines > 0
+    unless self.websocket_got_blank_lines > 0
       if waiting_to_read_magic? then
         return if self.socket_io.eof?
         partial_input = self.socket_io.read(bytes_available)
@@ -184,7 +184,7 @@ class Player
             break
           else
             line = self.input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
-            self.got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
+            self.websocket_got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
             parts = line.split(":")
             if parts.length == 2
               self.request_headers[parts[0]] = parts[1].strip
@@ -195,7 +195,7 @@ class Player
           end
         end
       end
-      return [bytes_available, self.input_buffer.length] if self.got_blank_lines == 0 && waiting_to_read_magic?
+      return [bytes_available, self.input_buffer.length] if self.websocket_got_blank_lines == 0 && waiting_to_read_magic?
     end
 
     unless self.read_magic || self.websocket_wrote_handshake
@@ -292,8 +292,8 @@ class Player
     paydirt = nil
     if self.websocket_framing_state == :read_frame_type && self.input_buffer.length >= 1
       byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
-      self.fin = (byte & 0x80) != 0
-      self.opcode = byte & 0x0f
+      #self.websocket_fin = (byte & 0x80) != 0
+      self.websocket_opcode = byte & 0x0f
       self.websocket_framing_state = :read_frame_length
     elsif self.websocket_framing_state == :read_frame_length && self.input_buffer.length >= 1
       byte = self.input_buffer.slice!(0, 1).unpack("C")[0]
@@ -339,7 +339,7 @@ class Player
       end
       self.input_buffer.slice!(0, self.input_buffer.length)
       self.websocket_read_something = Time.now.to_f if paydirt
-      case self.opcode
+      case self.websocket_opcode
         when $OPCODE_TEXT, $OPCODE_BINARY
         when $OPCODE_CLOSE
           puts "client sent close request" #TODO: make sure this stops the thread
@@ -348,7 +348,7 @@ class Player
         when $OPCODE_PONG
           puts "received pong, which is not supported"
         else
-          puts "received unknown opcode: %d" % self.opcode
+          puts "received unknown opcode: %d" % self.websocket_opcode
       end
       self.websocket_framing_state = :read_frame_type
     end
