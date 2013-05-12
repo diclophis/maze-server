@@ -101,7 +101,7 @@ class Player
     self.read_magic == false
   end
 
-  def write_byte(buffer, byte)
+  def websocket_write_byte(buffer, byte)
     buffer.write([byte].pack("C"))
   end
 
@@ -114,18 +114,18 @@ class Player
     return new_bytes.pack("C*")
   end
 
-  def send_frame(io, opcode, payload)
+  def websocket_send_frame(io, opcode, payload)
     buffer = StringIO.new
     byte1 = opcode | 0b10000000
-    write_byte(io, byte1)
+    websocket_write_byte(io, byte1)
     masked_byte = 0x00
     if payload.bytesize <= 125
-      write_byte(buffer, masked_byte | payload.bytesize)
+      websocket_write_byte(buffer, masked_byte | payload.bytesize)
     elsif payload.bytesize < 2 ** 16
-      write_byte(buffer, masked_byte | 126)
+      websocket_write_byte(buffer, masked_byte | 126)
       buffer.write([payload.bytesize].pack("n"))
     else
-      write_byte(buffer, masked_byte | 127)
+      websocket_write_byte(buffer, masked_byte | 127)
       buffer.write([payload.bytesize / (2 ** 32), payload.bytesize % (2 ** 32)].pack("NN"))
     end
 
@@ -276,7 +276,7 @@ class Player
     if out_frame.length > 0
       begin
         if self.websocket_framing
-          send_frame(self.socket_io, $OPCODE_BINARY, out_frame)
+          websocket_send_frame(self.socket_io, $OPCODE_BINARY, out_frame)
         else
           self.socket_io.write(out_frame)
         end
