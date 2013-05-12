@@ -50,7 +50,7 @@ class Player
   attr_accessor :websocket_handshake
 
   attr_accessor :parser
-  attr_accessor :bytes_available
+  #attr_accessor :bytes_available
 
   attr_accessor :websocket_read_something
   attr_accessor :websocket_get
@@ -165,12 +165,12 @@ class Player
     fionread = 0x541B
     ioctl_res = self.socket_io.ioctl(fionread, buf)
     things = buf.unpack("l")
-    self.bytes_available = things[0]
+    bytes_available = things[0]
 
     unless self.got_blank_lines > 0
       if waiting_to_read_magic? then
         return if self.socket_io.eof?
-        partial_input = self.socket_io.read(self.bytes_available)
+        partial_input = self.socket_io.read(bytes_available)
         if partial_input.length > 0
           if partial_input[0] == "{"
             self.read_magic = true
@@ -195,7 +195,7 @@ class Player
           end
         end
       end
-      return [self.bytes_available, self.input_buffer.length] if self.got_blank_lines == 0 && waiting_to_read_magic?
+      return [bytes_available, self.input_buffer.length] if self.got_blank_lines == 0 && waiting_to_read_magic?
     end
 
     unless self.read_magic || self.websocket_handshake
@@ -211,17 +211,17 @@ class Player
 
     ioctl_res = self.socket_io.ioctl(fionread, buf)
     things = buf.unpack("l")
-    self.bytes_available = things[0]
+    bytes_available = things[0]
 
-    need_to_disconnect_nothing_to_read_native = (self.bytes_available == 0 && !self.websocket_framing)
-    need_to_disconnect_nothing_to_read_websocket = (self.bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.websocket_read_something) > $READ_SOMETHING_TIMEOUT))
-    need_to_skip_websocket = (self.bytes_available == 0 && self.websocket_framing && !self.read_magic)
+    need_to_disconnect_nothing_to_read_native = (bytes_available == 0 && !self.websocket_framing)
+    need_to_disconnect_nothing_to_read_websocket = (bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.websocket_read_something) > $READ_SOMETHING_TIMEOUT))
+    need_to_skip_websocket = (bytes_available == 0 && self.websocket_framing && !self.read_magic)
 
     return if need_to_disconnect_nothing_to_read_native
     return if need_to_disconnect_nothing_to_read_websocket
     return 0 if need_to_skip_websocket
 
-    partial_input = self.socket_io.read(self.bytes_available)
+    partial_input = self.socket_io.read(bytes_available)
     self.input_buffer << partial_input
 
     if self.websocket_framing
@@ -242,7 +242,7 @@ class Player
       self.payload = nil
     end
 
-    [self.bytes_available, self.input_buffer.length]
+    [bytes_available, self.input_buffer.length]
   end
 
   def extract_native_payload
