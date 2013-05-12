@@ -135,20 +135,23 @@ class Player
           end
         end
         self.input_buffer << partial_input
-        return self.input_buffer.length unless waiting_to_read_magic?
-        loop do
-          pos_of_end_line = self.input_buffer.index($WEBSOCKET_CRLF)
-          if pos_of_end_line.nil?
-            break
-          else
-            line = self.input_buffer.slice!(0, pos_of_end_line + $WEBSOCKET_CRLF.length).strip
-            self.websocket_got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
-            parts = line.split(":")
-            if parts.length == 2
-              self.websocket_request_headers[parts[0]] = parts[1].strip
+        unless self.waiting_to_read_magic?
+          self.payload = self.native_extract_payload
+        else
+          loop do
+            pos_of_end_line = self.input_buffer.index($WEBSOCKET_CRLF)
+            if pos_of_end_line.nil?
+              break
             else
-              #NOTE: not a header, likely the "GET / ..." line, discarded
-              self.websocket_get = line
+              line = self.input_buffer.slice!(0, pos_of_end_line + $WEBSOCKET_CRLF.length).strip
+              self.websocket_got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
+              parts = line.split(":")
+              if parts.length == 2
+                self.websocket_request_headers[parts[0]] = parts[1].strip
+              else
+                #NOTE: not a header, likely the "GET / ..." line, discarded
+                self.websocket_get = line
+              end
             end
           end
         end
@@ -173,30 +176,32 @@ class Player
       end
     end
 
-    bytes_available = self.socket_bytes_available
+    unless self.payload
+      bytes_available = self.socket_bytes_available
 
-    need_to_disconnect_nothing_to_read_native = (bytes_available == 0 && !self.websocket_framing)
-    need_to_disconnect_nothing_to_read_websocket = (bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.websocket_read_something) > $WEBSOCKET_READ_SOMETHING_GRACE_TIMEOUT))
-    need_to_skip_websocket = (bytes_available == 0 && self.websocket_framing && !self.read_magic)
+      need_to_disconnect_nothing_to_read_native = (bytes_available == 0 && !self.websocket_framing)
+      need_to_disconnect_nothing_to_read_websocket = (bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.websocket_read_something) > $WEBSOCKET_READ_SOMETHING_GRACE_TIMEOUT))
+      need_to_skip_websocket = (bytes_available == 0 && self.websocket_framing && !self.read_magic)
 
-    return if need_to_disconnect_nothing_to_read_native
-    return if need_to_disconnect_nothing_to_read_websocket
-    return 0 if need_to_skip_websocket
+      return if need_to_disconnect_nothing_to_read_native
+      return if need_to_disconnect_nothing_to_read_websocket
+      return 0 if need_to_skip_websocket
 
-    partial_input = self.socket_io.read(bytes_available)
-    self.input_buffer << partial_input
+      partial_input = self.socket_io.read(bytes_available)
+      self.input_buffer << partial_input
 
-    if self.websocket_framing
-      self.payload = self.websocket_extract_payload
-      if self.payload && self.payload.length > 0 && self.payload[0] == "{" && self.read_magic == false
-        self.read_magic = true
+      if self.websocket_framing
+        self.payload = self.websocket_extract_payload
+      else
+        self.payload = self.native_extract_payload
       end
-    else
-      self.payload = self.native_extract_payload
     end
 
     if self.payload
       begin
+        if self.payload[0] == "{" && self.read_magic == false
+          self.read_magic = true
+        end
         self.json_sax_parser << self.payload
       rescue Yajl::ParseError => e
         return
