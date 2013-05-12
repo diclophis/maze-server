@@ -7,16 +7,17 @@ require 'base64'
 require 'stringio'
 require 'yajl'
 
-$SELECT_TIMEOUT = 1.000
-$WEB_SOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-$OPCODE_CONTINUATION = 0x00
-$OPCODE_TEXT = 0x01
-$OPCODE_BINARY = 0x02
-$OPCODE_CLOSE = 0x08
-$OPCODE_PING = 0x09
-$OPCODE_PONG = 0x0a
-$CRLF = "\r\n"
-$READ_SOMETHING_TIMEOUT = 0.5
+$SELECT_TIMEOUT = 0.1000
+
+$WEBSOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+$WEBSOCKET_OPCODE_CONTINUATION = 0x00
+$WEBSOCKET_OPCODE_TEXT = 0x01
+$WEBSOCKET_OPCODE_BINARY = 0x02
+$WEBSOCKET_OPCODE_CLOSE = 0x08
+$WEBSOCKET_OPCODE_PING = 0x09
+$WEBSOCKET_OPCODE_PONG = 0x0a
+$WEBSOCKET_CRLF = "\r\n"
+$WEBSOCKET_READ_SOMETHING_GRACE_TIMEOUT = 1.0 #NOTE: this is a grace period for some slowness in websocket init in emscripten/javascript
 
 class Player
   attr_accessor :player_id
@@ -30,18 +31,14 @@ class Player
   attr_accessor :socket_io
   attr_accessor :read_magic
   attr_accessor :input_buffer
-
-  attr_accessor :websocket_framing
-
   attr_accessor :payload
   attr_accessor :payload_raw
 
   attr_accessor :state_sent_open
   attr_accessor :state_sent_id
+  attr_accessor :json_sax_parser
 
   attr_accessor :user_updates
-
-  attr_accessor :json_sax_parser
 
   attr_accessor :websocket_request_headers
   attr_accessor :websocket_got_blank_lines
@@ -70,7 +67,6 @@ class Player
 
     self.websocket_request_headers = Hash.new
     self.websocket_got_blank_lines = 0
-    self.websocket_framing = false
     self.websocket_framing_state = :read_frame_type
     self.websocket_wrote_handshake = false
     self.websocket_read_something = Time.now.to_f
@@ -122,11 +118,11 @@ class Player
         self.input_buffer << partial_input
         return self.input_buffer.length unless waiting_to_read_magic?
         loop do
-          pos_of_end_line = self.input_buffer.index($CRLF)
+          pos_of_end_line = self.input_buffer.index($WEBSOCKET_CRLF)
           if pos_of_end_line.nil?
             break
           else
-            line = self.input_buffer.slice!(0, pos_of_end_line + $CRLF.length).strip
+            line = self.input_buffer.slice!(0, pos_of_end_line + $WEBSOCKET_CRLF.length).strip
             self.websocket_got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
             parts = line.split(":")
             if parts.length == 2
@@ -145,7 +141,7 @@ class Player
       if key = self.websocket_request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
         raise "only binary websockets are supported" unless self.websocket_request_headers["Sec-WebSocket-Protocol"] == "binary"
         write_websocket_handshake(self.socket_io, create_websocket_accept_token(key))
-        self.websocket_framing = true
+        #self.websocket_framing = true
         self.websocket_wrote_handshake = true
       else
         raise "not sure what this is, abort and close" unless self.read_magic
@@ -157,7 +153,7 @@ class Player
     bytes_available = things[0]
 
     need_to_disconnect_nothing_to_read_native = (bytes_available == 0 && !self.websocket_framing)
-    need_to_disconnect_nothing_to_read_websocket = (bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.websocket_read_something) > $READ_SOMETHING_TIMEOUT))
+    need_to_disconnect_nothing_to_read_websocket = (bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.websocket_read_something) > $WEBSOCKET_READ_SOMETHING_GRACE_TIMEOUT))
     need_to_skip_websocket = (bytes_available == 0 && self.websocket_framing && !self.read_magic)
 
     return if need_to_disconnect_nothing_to_read_native
@@ -213,7 +209,7 @@ class Player
     if out_frame.length > 0
       begin
         if self.websocket_framing
-          websocket_send_frame(self.socket_io, $OPCODE_BINARY, out_frame)
+          websocket_send_frame(self.socket_io, $WEBSOCKET_OPCODE_BINARY, out_frame)
         else
           native_send_frame(out_frame)
         end
@@ -223,6 +219,10 @@ class Player
     end
 
     return out_frame.length
+  end
+
+  def websocket_framing
+    self.websocket_wrote_handshake
   end
 
   def websocket_write_byte(buffer, byte)
@@ -259,19 +259,19 @@ class Player
 
   def create_websocket_accept_token(key)
     sha1 = Digest::SHA1.new
-    message = key + $WEB_SOCKET_MAGIC
+    message = key + $WEBSOCKET_MAGIC
     digested = sha1.digest message
     Base64.encode64(digested).strip
   end
 
   def write_websocket_handshake(io, accept_token)
     s = String.new
-    s << "HTTP/1.1 101 Switching Protocols" + $CRLF
-    s << "Upgrade: websocket" + $CRLF
-    s << "Connection: Upgrade" + $CRLF
-    s << "Sec-WebSocket-Accept: " + accept_token + $CRLF
-    s << "Sec-WebSocket-Protocol: binary" + $CRLF 
-    s << $CRLF 
+    s << "HTTP/1.1 101 Switching Protocols" + $WEBSOCKET_CRLF
+    s << "Upgrade: websocket" + $WEBSOCKET_CRLF
+    s << "Connection: Upgrade" + $WEBSOCKET_CRLF
+    s << "Sec-WebSocket-Accept: " + accept_token + $WEBSOCKET_CRLF
+    s << "Sec-WebSocket-Protocol: binary" + $WEBSOCKET_CRLF 
+    s << $WEBSOCKET_CRLF 
     loop do
       ready_for_reading, ready_for_writing, errored = IO.select(nil, [io])
       ready_for_writing.each do |socket_to_write_to|
@@ -334,12 +334,12 @@ class Player
       self.input_buffer.slice!(0, self.input_buffer.length)
       self.websocket_read_something = Time.now.to_f if paydirt
       case self.websocket_opcode
-        when $OPCODE_TEXT, $OPCODE_BINARY
-        when $OPCODE_CLOSE
+        when $WEBSOCKET_OPCODE_TEXT, $WEBSOCKET_OPCODE_BINARY
+        when $WEBSOCKET_OPCODE_CLOSE
           puts "client sent close request" #TODO: make sure this stops the thread
-        when $OPCODE_PING
+        when $WEBSOCKET_OPCODE_PING
           puts "received ping, which is not supported"
-        when $OPCODE_PONG
+        when $WEBSOCKET_OPCODE_PONG
           puts "received pong, which is not supported"
         else
           puts "received unknown opcode: %d" % self.websocket_opcode
