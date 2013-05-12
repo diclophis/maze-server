@@ -112,14 +112,18 @@ class Player
     self.read_magic == false
   end
 
-  def perform_required_reading
-    return if self.socket_io.closed?
-
+  def socket_bytes_available
     buf = ""
     fionread = 0x541B
     ioctl_res = self.socket_io.ioctl(fionread, buf)
     things = buf.unpack("l")
-    bytes_available = things[0]
+    things[0]
+  end
+
+  def perform_required_reading
+    return if self.socket_io.closed?
+
+    bytes_available = self.socket_bytes_available
 
     unless self.websocket_got_blank_lines > 0
       if waiting_to_read_magic? then
@@ -169,9 +173,7 @@ class Player
       end
     end
 
-    ioctl_res = self.socket_io.ioctl(fionread, buf)
-    things = buf.unpack("l")
-    bytes_available = things[0]
+    bytes_available = self.socket_bytes_available
 
     need_to_disconnect_nothing_to_read_native = (bytes_available == 0 && !self.websocket_framing)
     need_to_disconnect_nothing_to_read_websocket = (bytes_available == 0 && self.websocket_framing && ((Time.now.to_f - self.websocket_read_something) > $WEBSOCKET_READ_SOMETHING_GRACE_TIMEOUT))
