@@ -150,17 +150,17 @@ class Player
   def call(obj)
     if obj["update_player"]
       self.registered = true
+      self.update += 1
       unless (self.px == obj["update_player"][0] &&
         self.py == obj["update_player"][1] &&
         self.tx == obj["update_player"][2] &&
         self.ty == obj["update_player"][3])
-        self.update += 1
         self.px = obj["update_player"][0]
         self.py = obj["update_player"][1]
         self.tx = obj["update_player"][2]
         self.ty = obj["update_player"][3]
+        puts "#{self.player_id} is going to #{self.px},#{self.py} => #{self.tx},#{self.ty}"
       end
-      #puts "#{self} is going to #{self.inspect}"
     end
   end
 
@@ -357,6 +357,7 @@ class Player
       else
         paydirt = self.payload_raw
       end
+      self.input_buffer.slice!(0, self.input_buffer.length)
       self.read_something = Time.now.to_f if paydirt
       case self.opcode
         when $OPCODE_TEXT, $OPCODE_BINARY
@@ -378,7 +379,7 @@ end
 
 def main
   connections = Array.new 
-  server = TCPServer.new(7002)
+  server = TCPServer.new(7001)
   uid = 0
   loop do
     begin
