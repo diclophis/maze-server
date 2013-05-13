@@ -43,6 +43,7 @@ class Player
   attr_accessor :websocket_plength
   attr_accessor :websocket_mask
   attr_accessor :websocket_mask_key 
+  attr_accessor :websocket_needs_handshake_written
   attr_accessor :websocket_wrote_handshake
   attr_accessor :websocket_read_something
   attr_accessor :websocket_get
@@ -73,6 +74,7 @@ class Player
     self.websocket_plength = nil
     self.websocket_mask = nil
     self.websocket_mask_key = nil
+    self.websocket_needs_handshake_written = false
     self.websocket_wrote_handshake = false
     self.websocket_read_something = Time.now.to_f
     self.websocket_get = nil
@@ -125,6 +127,7 @@ class Player
             self.read_magic = true
           end
         end
+        #NOTE: feed input_buffer
         self.input_buffer << partial_input
         unless self.waiting_to_read_magic?
           self.payload = self.native_extract_payload
@@ -134,6 +137,7 @@ class Player
             if pos_of_end_line.nil?
               break
             else
+              #NOTE: slice input_buffer
               line = self.input_buffer.slice!(0, pos_of_end_line + WEBSOCKET_CRLF.length).strip
               self.websocket_got_blank_lines += 1 if (line.length == 0) #NOTE: break reading because we are at blank line at head of HTTP headers
               parts = line.split(":")
@@ -146,14 +150,14 @@ class Player
           end
         end
       end
-      return [bytes_available, self.input_buffer.length] if self.websocket_got_blank_lines == 0 && waiting_to_read_magic?
+      return bytes_available if self.websocket_got_blank_lines == 0 && waiting_to_read_magic?
     end
 
     unless self.read_magic || self.websocket_wrote_handshake
       if key = self.websocket_request_headers["Sec-WebSocket-Key"] #NOTE: socket is a websocket, respond with handshake
         if self.websocket_request_headers["Sec-WebSocket-Protocol"] == "binary"
-          write_websocket_handshake(self.socket_io, create_websocket_accept_token(key))
-          self.websocket_wrote_handshake = true
+          self.websocket_needs_handshake_written = true
+          return bytes_available
         else
           puts "only binary websockets are supported" 
           return
@@ -178,10 +182,14 @@ class Player
       return 0 if need_to_skip_websocket
 
       partial_input = self.socket_io.read(bytes_available)
+      #NOTE: feed input_buffer
       self.input_buffer << partial_input
 
       if self.websocket_framing
-        self.payload = self.websocket_extract_payload
+        while self.input_buffer.length > 0
+          self.payload = self.websocket_extract_payload
+          break if self.payload
+        end
       else
         self.payload = self.native_extract_payload
       end
@@ -200,10 +208,16 @@ class Player
       end
     end
 
-    [bytes_available, self.input_buffer.length]
+    return bytes_available
   end
 
   def perform_required_writing(usrs)
+    #NOTE: socket is a websocket, respond with handshake
+    if self.websocket_needs_handshake_written && key = self.websocket_request_headers["Sec-WebSocket-Key"]
+      written = self.write_websocket_handshake(self.socket_io, self.create_websocket_accept_token(key))
+      return written
+    end
+
     return 0 if (!self.websocket_framing && !self.read_magic) || (self.websocket_framing && !self.websocket_wrote_handshake)
     out_frame = ""
     if self.state_sent_open
@@ -291,14 +305,10 @@ class Player
     s << "Sec-WebSocket-Accept: " + accept_token + WEBSOCKET_CRLF
     s << "Sec-WebSocket-Protocol: binary" + WEBSOCKET_CRLF 
     s << WEBSOCKET_CRLF 
-    loop do
-      ready_for_reading, ready_for_writing, errored = IO.select(nil, [io])
-      ready_for_writing.each do |socket_to_write_to|
-        bytes_to_write = s.slice!(0, s.length)
-        bytes_written = socket_to_write_to.write(bytes_to_write)
-      end
-      break if s.length == 0 #NOTE: stop writing once we have delivered the entire header response
-    end
+    io.write(s)
+    self.websocket_needs_handshake_written = false
+    self.websocket_wrote_handshake = true
+    s.length
   end
 
   def websocket_extract_payload
