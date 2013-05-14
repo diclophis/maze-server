@@ -22,8 +22,8 @@ describe Player do
     return new_bytes.pack("C*")
   end
 
-  def mock_websocket_bytes(payload)
-    opcode = 0x02
+  def mock_websocket_bytes(payload, opcode = nil)
+    opcode ||= 0x02
     mask = true
     buffer = StringIO.new
     write_byte(buffer, 0x80 | opcode)
@@ -73,6 +73,10 @@ describe Player do
 
     it "returns nil when reading" do
       @player.perform_required_reading.should be_nil
+    end
+
+    it "returns nil when writing" do
+      @player.perform_required_writing.should be_nil
     end
   end
 
@@ -137,15 +141,35 @@ describe Player do
         mock_bytes(byte)
         @player.perform_required_reading.should == byte.length
       end
-
-      @player.websocket_wrote_handshake = true
-
-      mock_websocket_bytes(@magic)
-      @player.perform_required_reading.should_not be_nil
     end
 
-    it "should read magic" do
-      @player.read_magic.should be_true
+    describe "when sent close opcode" do
+      before do
+        @player.websocket_wrote_handshake = true
+        mock_websocket_bytes("", 0x08)
+        @io.should_receive(:close) { true }
+        @io.should_not_receive(:write) { true }
+      end
+
+      it "closes the socket" do
+        @player.perform_required_reading.should_not be_nil
+        @player.perform_required_reading.should_not be_nil
+
+        @io.stub(:closed?) { true }
+        @player.perform_required_writing.should be_nil
+      end
+    end
+
+    describe "when sent magic" do
+      before do
+        @player.websocket_wrote_handshake = true
+        mock_websocket_bytes(@magic)
+      end
+
+      it "should read magic" do
+        @player.perform_required_reading.should_not be_nil
+        @player.read_magic.should be_true
+      end
     end
   end
 end

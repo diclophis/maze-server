@@ -211,9 +211,11 @@ class Player
     return bytes_available
   end
 
-  def perform_required_writing(usrs)
+  def perform_required_writing(usrs = nil)
+    return if self.socket_io.closed?
+
     #NOTE: socket is a websocket, respond with handshake
-    if self.websocket_needs_handshake_written && key = self.websocket_request_headers["Sec-WebSocket-Key"]
+    if !self.websocket_wrote_handshake && self.websocket_needs_handshake_written && key = self.websocket_request_headers["Sec-WebSocket-Key"]
       written = self.write_websocket_handshake(self.socket_io, self.create_websocket_accept_token(key))
       return written
     end
@@ -365,7 +367,8 @@ class Player
       case self.websocket_opcode
         when WEBSOCKET_OPCODE_TEXT, WEBSOCKET_OPCODE_BINARY
         when WEBSOCKET_OPCODE_CLOSE
-          puts "client sent close request" #TODO: make sure this stops the thread
+          #puts "client sent close request" #TODO: make sure this stops the thread
+          self.socket_io.close
         when WEBSOCKET_OPCODE_PING
           puts "received ping, which is not supported"
         when WEBSOCKET_OPCODE_PONG
