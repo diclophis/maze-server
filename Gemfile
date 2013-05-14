@@ -1,4 +1,5 @@
 source :gemcutter
 
-gem "yajl-ruby"
+gem "rake"
 gem "rspec"
+gem "yajl-ruby"

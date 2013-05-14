@@ -8,3 +8,4 @@ require 'stringio'
 require 'yajl'
 
 autoload(:Player, "./player.rb")
+autoload(:Server, "./server.rb")
