@@ -92,10 +92,10 @@ class Player
         self.py == obj["update_player"][1] &&
         self.tx == obj["update_player"][2] &&
         self.ty == obj["update_player"][3])
-        self.px = obj["update_player"][0]
-        self.py = obj["update_player"][1]
-        self.tx = obj["update_player"][2]
-        self.ty = obj["update_player"][3]
+        self.px = obj["update_player"][0].to_i
+        self.py = obj["update_player"][1].to_i
+        self.tx = obj["update_player"][2].to_i
+        self.ty = obj["update_player"][3].to_i
         #puts "#{self.player_id} is going to #{self.px},#{self.py} => #{self.tx},#{self.ty}"
       end
     end
