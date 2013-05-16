@@ -4,7 +4,7 @@ require './config'
 
 
 class Server
-  SELECT_TIMEOUT = 1.0 
+  SELECT_TIMEOUT = 0.001 
 
   attr_accessor :connections
   attr_accessor :server
