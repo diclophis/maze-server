@@ -103,8 +103,10 @@ describe Player do
 
     describe "reading player updates as a stream" do
       before do
-        @px = 64.0, @py = 8.0
-        @tx = 64.0, @ty = 8.0
+        @px = 64.0
+        @py = 8.0
+        @tx = 64.0
+        @ty = 8.0
         @player_update = "{\"update_player\":[#{@px}, #{@py}, #{@tx}, #{@ty}]}"
         @player_update.split("").each do |byte|
           mock_bytes(byte)
