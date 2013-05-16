@@ -106,11 +106,11 @@ class Player
   end
 
   def socket_bytes_available
-    buf = ""
-    fionread = 0x541B
-    ioctl_res = self.socket_io.ioctl(fionread, buf)
-    things = buf.unpack("l")
-    things[0]
+    self.socket_io.nread
+  end
+
+  def disconnect
+    self.socket_io.close
   end
 
   def perform_required_reading
@@ -133,6 +133,9 @@ class Player
           self.payload = self.native_extract_payload
         else
           loop do
+            if self.websocket_get.nil? && self.input_buffer.length > 3
+              return self.disconnect unless self.input_buffer[0, 3] == "GET"
+            end
             pos_of_end_line = self.input_buffer.index(WEBSOCKET_CRLF)
             if pos_of_end_line.nil?
               break
@@ -202,7 +205,7 @@ class Player
         end
         self.json_sax_parser << self.payload
       rescue Yajl::ParseError => e
-        return
+        return self.disconnect
       ensure
         self.payload = nil
       end
@@ -367,8 +370,7 @@ class Player
       case self.websocket_opcode
         when WEBSOCKET_OPCODE_TEXT, WEBSOCKET_OPCODE_BINARY
         when WEBSOCKET_OPCODE_CLOSE
-          #puts "client sent close request" #TODO: make sure this stops the thread
-          self.socket_io.close
+          self.disconnect
         when WEBSOCKET_OPCODE_PING
           puts "received ping, which is not supported"
         when WEBSOCKET_OPCODE_PONG

@@ -91,6 +91,37 @@ describe Player do
     end
   end
 
+  describe "disconnect" do
+    it "closes the socket" do
+      @io.should_receive(:close)
+      @player.disconnect
+    end
+  end
+
+  describe "when reading pure reading garbage" do
+    before do
+      @garbage = "kasjd kalsjd alksdj alskjd aklsj dklasjd"
+      mock_bytes(@garbage)
+    end
+
+    it "should close the connection as soon as possible" do
+      @player.should_receive(:disconnect)
+      @player.perform_required_reading.should be_nil
+    end
+  end
+
+  describe "when reading garbage that sorta looks like json" do
+    before do
+      @json_like_garbage = "{kasjd kalsjd alksdj alskjd aklsj dklasjd"
+      mock_bytes(@json_like_garbage)
+    end
+
+    it "should close the connection as soon as possible" do
+      @player.should_receive(:disconnect)
+      @player.perform_required_reading.should be_nil
+    end
+  end
+
   describe "when connecting with native sockets" do
     before do
       mock_bytes(@magic)
@@ -149,11 +180,12 @@ describe Player do
       before do
         @player.websocket_wrote_handshake = true
         mock_websocket_bytes("", 0x08)
-        @io.should_receive(:close) { true }
-        @io.should_not_receive(:write) { true }
       end
 
-      it "closes the socket" do
+      it "disconnects and does not attempt to do any writing" do
+        @player.should_receive(:disconnect)
+        @io.should_not_receive(:write) { true }
+
         @player.perform_required_reading.should_not be_nil
         @player.perform_required_reading.should_not be_nil
 
